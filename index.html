@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="InfinityPaste">
+  <meta name="theme-color" content="#000000">
+  <title>InfinityPaste</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+
+    <!-- Header -->
+    <header class="header">
+      <div class="header-title">
+        <span class="header-logo">∞</span>
+        <span>InfinityPaste</span>
+      </div>
+      <div class="header-badge" id="queue-badge" onclick="switchTab('queue')">
+        📋 <span id="badge-count">0</span>
+      </div>
+    </header>
+
+    <!-- Tab Bar -->
+    <nav class="tab-bar">
+      <button class="tab active" id="tab-collect" onclick="switchTab('collect')">
+        <span class="tab-icon">＋</span>
+        Collect
+      </button>
+      <button class="tab" id="tab-queue" onclick="switchTab('queue')">
+        <span class="tab-icon">📋</span>
+        Queue
+      </button>
+      <button class="tab" id="tab-settings" onclick="switchTab('settings')">
+        <span class="tab-icon">⚙️</span>
+        Settings
+      </button>
+    </nav>
+
+    <!-- Collect Tab -->
+    <section class="tab-content active" id="view-collect">
+      <div class="collect-area">
+        <label class="input-label">Paste or type content</label>
+        <textarea
+          id="collect-input"
+          class="collect-textarea"
+          placeholder="Paste code, text, notes, URLs — anything you want to save to the queue…"
+          rows="8"
+        ></textarea>
+        <div class="collect-meta">
+          <input
+            id="collect-label"
+            class="label-input"
+            type="text"
+            placeholder="Label (optional) — e.g. README, App.tsx fix, prompt"
+          />
+        </div>
+        <button class="btn btn-primary btn-full" onclick="addToQueue()">
+          + Add to Queue
+        </button>
+        <button class="btn btn-secondary btn-full" onclick="pasteFromClipboard()">
+          📋 Paste from Clipboard
+        </button>
+      </div>
+    </section>
+
+    <!-- Queue Tab -->
+    <section class="tab-content" id="view-queue">
+      <div class="queue-toolbar">
+        <span class="queue-count" id="queue-count-label">0 items</span>
+        <div class="queue-actions">
+          <button class="btn btn-accent btn-sm" onclick="copyAll()">Copy All</button>
+          <button class="btn btn-danger btn-sm" onclick="clearQueue()">Clear</button>
+        </div>
+      </div>
+      <div id="queue-list" class="queue-list">
+        <div class="queue-empty" id="queue-empty">
+          <div class="empty-icon">∞</div>
+          <p>Your queue is empty.</p>
+          <p class="empty-hint">Go to Collect to add items.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Settings Tab -->
+    <section class="tab-content" id="view-settings">
+      <div class="settings-list">
+        <div class="settings-section-title">Queue</div>
+        <div class="settings-row">
+          <span>Auto-clear after Copy All</span>
+          <label class="toggle">
+            <input type="checkbox" id="setting-autoclear" onchange="saveSetting('autoclear', this.checked)">
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+        <div class="settings-row">
+          <span>Show item numbers</span>
+          <label class="toggle">
+            <input type="checkbox" id="setting-shownumbers" checked onchange="saveSetting('shownumbers', this.checked)">
+            <span class="toggle-track"></span>
+          </label>
+        </div>
+        <div class="settings-row">
+          <span>Separator between items</span>
+          <select id="setting-separator" class="settings-select" onchange="saveSetting('separator', this.value)">
+            <option value="\n\n---\n\n">--- (horizontal rule)</option>
+            <option value="\n\n">Double newline</option>
+            <option value="\n\n===\n\n">=== (equals)</option>
+            <option value="\n\n">None</option>
+          </select>
+        </div>
+
+        <div class="settings-section-title">Storage</div>
+        <div class="settings-row">
+          <span>Items in queue</span>
+          <span id="stat-count" class="settings-value">0</span>
+        </div>
+        <div class="settings-row">
+          <span>Storage used</span>
+          <span id="stat-storage" class="settings-value">0 KB</span>
+        </div>
+        <div class="settings-row danger" onclick="clearQueue()">
+          <span>Clear all queue items</span>
+          <span class="settings-arrow">›</span>
+        </div>
+
+        <div class="settings-section-title">About</div>
+        <div class="settings-row">
+          <span>Version</span>
+          <span class="settings-value">1.0.0</span>
+        </div>
+        <div class="settings-row" onclick="window.open('https://github.com/nothinginfinity/infinitypaste')">
+          <span>GitHub</span>
+          <span class="settings-arrow">›</span>
+        </div>
+      </div>
+    </section>
+
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast"></div>
+
+  <script src="app.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('service-worker.js');
+    }
+  </script>
+</body>
+</html>
