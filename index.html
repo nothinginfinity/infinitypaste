@@ -137,6 +137,17 @@
           <button class="btn btn-danger btn-sm" onclick="clearQueue()">Clear</button>
         </div>
       </div>
+      <!-- Phase 2: Search + Sort controls -->
+      <div class="queue-search-row">
+        <input id="queue-search" class="queue-search-input" type="search" placeholder="🔍 Search queue…" oninput="onQueueSearch()" />
+        <select id="queue-sort" class="queue-sort-select" onchange="onQueueSort()">
+          <option value="newest">Newest</option>
+          <option value="oldest">Oldest</option>
+          <option value="label">Label A–Z</option>
+          <option value="source">Source</option>
+          <option value="custom">Custom</option>
+        </select>
+      </div>
       <div id="queue-list" class="queue-list">
         <div class="queue-empty" id="queue-empty">
           <div class="empty-icon">∞</div>
@@ -501,7 +512,7 @@
         <div class="settings-section-title">About</div>
         <div class="settings-row">
           <span>Version</span>
-          <span class="settings-value">3.2.0</span>
+          <span class="settings-value">3.5.0</span>
         </div>
         <div class="settings-row" onclick="window.open('https://github.com/nothinginfinity/infinitypaste', '_blank', 'noopener')">
           <span>GitHub</span>

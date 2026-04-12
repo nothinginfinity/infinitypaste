@@ -1,4 +1,5 @@
-// ─── InfinityPaste v3.4.0 — app.js ──────────────────────────────────────────────
+// ─── InfinityPaste v3.5.0 — app.js ──────────────────────────────────────────────
+// Phase 2: Queue Search, Sort, Drag-Reorder, Expand/Collapse Preview
 const STORAGE_KEY  = 'infinitypaste_queue';
 const SETTINGS_KEY = 'infinitypaste_settings';
 const FILES_KEY    = 'infinitypaste_files';
@@ -8,7 +9,6 @@ const IDB_STORE    = 'recordings';
 const IDB_FILES_STORE = 'files';
 const IDB_VERSION  = 2;
 
-// All supported providers — id must match HTML input ids
 const PROVIDERS = [
   { id: 'openai',    name: 'OpenAI',       prefix: 'sk-',      minLen: 20 },
   { id: 'groq',      name: 'Groq',         prefix: 'gsk_',     minLen: 10 },
@@ -22,25 +22,28 @@ const PROVIDERS = [
   { id: 'sambanova', name: 'SambaNova',    prefix: '',         minLen: 10 },
 ];
 
-// Image MIME types that support OCR
 const IMAGE_TYPES = ['image/png','image/jpeg','image/jpg','image/gif','image/webp','image/bmp','image/tiff'];
 const IMAGE_EXTS  = ['png','jpg','jpeg','gif','webp','bmp','tiff','heic','heif'];
 
-// Tesseract CDN — loaded on demand, worker reused across calls
 const TESSERACT_CDN = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
 let _tesseractWorker = null;
 let _tesseractLoaded = false;
 
-// PDF.js CDN — loaded on demand
 const PDFJS_CDN = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs';
 let _pdfjsLib = null;
 let _pdfjsLoaded = false;
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let queue    = [];
-let files    = [];   // metadata only — blobs/content live in IDB for images/PDFs
+let files    = [];
 let apiKeys  = {};
 let settings = { autoclear: false, shownumbers: true, separator: '\n\n---\n\n' };
+
+// Phase 2: search/sort/expand state
+let queueSearchTerm  = '';
+let queueSortMode    = 'newest'; // newest | oldest | label | source | custom
+let expandedCardIds  = new Set();
+let dragSrcId        = null;
 
 // Recording state
 let mediaRecorder    = null;
@@ -80,7 +83,6 @@ function initIDB() {
       const db = e.target.result;
       if (!db.objectStoreNames.contains(IDB_STORE))
         db.createObjectStore(IDB_STORE, { keyPath: 'id' });
-      // v2: add files object store for image/PDF blobs
       if (!db.objectStoreNames.contains(IDB_FILES_STORE))
         db.createObjectStore(IDB_FILES_STORE, { keyPath: 'id' });
     };
@@ -130,7 +132,7 @@ function idbGetAllMeta() {
   });
 }
 
-// ─── IDB Files Store (images + PDFs) ─────────────────────────────────────────
+// ─── IDB Files Store ──────────────────────────────────────────────────────────
 function idbFilePut(record) {
   return new Promise((resolve, reject) => {
     const tx = idbDb.transaction(IDB_FILES_STORE, 'readwrite');
@@ -332,15 +334,13 @@ async function transcribeRecording(id) {
   }
 }
 
-// ─── PDF.js — lazy load ───────────────────────────────────────────────────────
+// ─── PDF.js ───────────────────────────────────────────────────────────────────
 async function _getPdfJs() {
   if (_pdfjsLib) return _pdfjsLib;
   if (!_pdfjsLoaded) {
-    // Use dynamic import for the ES module build
     try {
       const mod = await import(PDFJS_CDN);
       _pdfjsLib = mod;
-      // Point worker to CDN so it doesn't try to load locally
       _pdfjsLib.GlobalWorkerOptions.workerSrc =
         'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs';
       _pdfjsLoaded = true;
@@ -350,7 +350,6 @@ async function _getPdfJs() {
   }
   return _pdfjsLib;
 }
-
 async function extractPdfText(blob) {
   const pdfjsLib = await _getPdfJs();
   const arrayBuffer = await blob.arrayBuffer();
@@ -365,7 +364,7 @@ async function extractPdfText(blob) {
   return pageTexts.join('\n\n');
 }
 
-// ─── OCR Phase 1: Free local Tesseract.js ─────────────────────────────────────
+// ─── OCR ──────────────────────────────────────────────────────────────────────
 function isImageFile(file) {
   const ext = file.name.split('.').pop().toLowerCase();
   return IMAGE_TYPES.includes(file.type) || IMAGE_EXTS.includes(ext);
@@ -373,7 +372,6 @@ function isImageFile(file) {
 function isPdfFile(file) {
   return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
 }
-
 function _loadTesseractScript() {
   if (_tesseractLoaded) return Promise.resolve();
   return new Promise((resolve, reject) => {
@@ -384,7 +382,6 @@ function _loadTesseractScript() {
     document.head.appendChild(s);
   });
 }
-
 async function _getTesseractWorker() {
   if (_tesseractWorker) return _tesseractWorker;
   await _loadTesseractScript();
@@ -396,32 +393,23 @@ async function _getTesseractWorker() {
   });
   return _tesseractWorker;
 }
-
 async function ocrFile(fileId) {
   const file = files.find(f => f.id == fileId);
   if (!file) return;
-
   const btn = document.getElementById(`ocr-btn-${fileId}`);
   if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
   showToast('Running local OCR…');
-
   try {
-    // Retrieve blob from IDB
     const stored = await idbFileGet(fileId);
     if (!stored?.blob) throw new Error('Image data missing — please re-upload the file');
-
     const objectUrl = URL.createObjectURL(stored.blob);
     const worker = await _getTesseractWorker();
     const result = await worker.recognize(objectUrl);
     URL.revokeObjectURL(objectUrl);
-
     const text = result.data.text?.trim();
     if (!text) throw new Error('No text found in image');
-
     file.ocrText = text;
-    saveFiles();
-    renderFiles();
-
+    saveFiles(); renderFiles();
     addToQueue(text, 'ocr', file.name);
     switchTab('queue');
     showToast('✓ OCR complete — text added to queue');
@@ -432,18 +420,16 @@ async function ocrFile(fileId) {
   }
 }
 
-// ─── OCR Phase 2: Analyze OCR text with LLM ──────────────────────────────────
+// ─── LLM Analyze ─────────────────────────────────────────────────────────────
 const ANALYZE_PROVIDERS = [
   { id: 'groq',      name: 'Groq',      url: 'https://api.groq.com/openai/v1/chat/completions',    model: 'llama-3.1-8b-instant', getKey: () => apiKeys.groq },
   { id: 'deepseek',  name: 'DeepSeek',  url: 'https://api.deepseek.com/chat/completions',           model: 'deepseek-chat',        getKey: () => apiKeys.deepseek },
   { id: 'mistral',   name: 'Mistral',   url: 'https://api.mistral.ai/v1/chat/completions',          model: 'mistral-small-latest', getKey: () => apiKeys.mistral },
   { id: 'cerebras',  name: 'Cerebras', url: 'https://api.cerebras.ai/v1/chat/completions',          model: 'llama3.1-8b',          getKey: () => apiKeys.cerebras },
 ];
-
 function _getAnalyzeProvider() {
   return ANALYZE_PROVIDERS.find(p => p.getKey());
 }
-
 async function analyzeOcrText(fileId) {
   const file = files.find(f => f.id == fileId);
   if (!file) return;
@@ -563,14 +549,11 @@ function initSelectionCapture() {
   }, { passive: true });
 }
 
-// ─── Storage (queue + settings metadata) ─────────────────────────────────────
+// ─── Storage ──────────────────────────────────────────────────────────────────
 function loadQueue() { try { queue = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch { queue = []; } }
 function saveQueue() { localStorage.setItem(STORAGE_KEY, JSON.stringify(queue)); }
-
-// Files metadata only in localStorage — blobs live in IDB
 function loadFiles() {
   try { files = JSON.parse(localStorage.getItem(FILES_KEY)) || []; } catch { files = []; }
-  // Strip any legacy base64 content fields to free localStorage space
   let dirty = false;
   files.forEach(f => {
     if (f.content && f.content.startsWith('data:')) { delete f.content; dirty = true; }
@@ -631,6 +614,7 @@ async function pasteFromClipboard() {
 }
 function removeItem(id) {
   queue = queue.filter(i => i.id !== id);
+  expandedCardIds.delete(id);
   saveQueue(); renderQueue(); updateBadge(); updateStats(); showToast('Removed');
 }
 function copyItem(id) {
@@ -651,8 +635,186 @@ function copyAll() {
 }
 function clearQueue(silent = false) {
   if (!silent && !queue.length) { showToast('Queue is already empty'); return; }
-  queue = []; saveQueue(); renderQueue(); updateBadge(); updateStats();
+  queue = []; expandedCardIds.clear();
+  saveQueue(); renderQueue(); updateBadge(); updateStats();
   if (!silent) showToast('Queue cleared');
+}
+
+// ─── Phase 2: Search & Sort ───────────────────────────────────────────────────
+function onQueueSearch() {
+  queueSearchTerm = document.getElementById('queue-search').value.trim().toLowerCase();
+  renderQueue();
+}
+function onQueueSort() {
+  queueSortMode = document.getElementById('queue-sort').value;
+  renderQueue();
+}
+
+// Returns filtered + sorted view of queue (does NOT mutate queue array)
+function _getFilteredQueue() {
+  let items = [...queue];
+
+  // Filter
+  if (queueSearchTerm) {
+    items = items.filter(item =>
+      item.content.toLowerCase().includes(queueSearchTerm) ||
+      (item.label  || '').toLowerCase().includes(queueSearchTerm) ||
+      (item.source || '').toLowerCase().includes(queueSearchTerm)
+    );
+  }
+
+  // Sort
+  switch (queueSortMode) {
+    case 'oldest': items.sort((a, b) => a.id - b.id); break;
+    case 'label':  items.sort((a, b) => (a.label || '').localeCompare(b.label || '')); break;
+    case 'source': items.sort((a, b) => (a.source || '').localeCompare(b.source || '')); break;
+    case 'custom': /* user-defined order, kept as-is */ break;
+    case 'newest':
+    default: items.sort((a, b) => b.id - a.id); break;
+  }
+
+  return items;
+}
+
+// ─── Phase 2: Expand / Collapse card preview ─────────────────────────────────
+function toggleCardExpand(id) {
+  if (expandedCardIds.has(id)) {
+    expandedCardIds.delete(id);
+  } else {
+    expandedCardIds.add(id);
+  }
+  renderQueue();
+}
+
+// ─── Phase 2: Drag-to-reorder (touch + mouse) ────────────────────────────────
+function _initCardDrag(card, itemId) {
+  // Desktop drag
+  card.draggable = true;
+  card.addEventListener('dragstart', e => {
+    dragSrcId = itemId;
+    e.dataTransfer.effectAllowed = 'move';
+    card.classList.add('queue-card--dragging');
+  });
+  card.addEventListener('dragend', () => {
+    card.classList.remove('queue-card--dragging');
+    document.querySelectorAll('.queue-card--dragover').forEach(el => el.classList.remove('queue-card--dragover'));
+  });
+  card.addEventListener('dragover', e => {
+    e.preventDefault(); e.dataTransfer.dropEffect = 'move';
+    card.classList.add('queue-card--dragover');
+  });
+  card.addEventListener('dragleave', () => card.classList.remove('queue-card--dragover'));
+  card.addEventListener('drop', e => {
+    e.preventDefault();
+    card.classList.remove('queue-card--dragover');
+    if (dragSrcId === itemId) return;
+    _reorderQueue(dragSrcId, itemId);
+  });
+
+  // Touch drag
+  let touchStartY = 0, touchStartX = 0, touchClone = null, touchScrollOff = false;
+  card.addEventListener('touchstart', e => {
+    touchStartY = e.touches[0].clientY;
+    touchStartX = e.touches[0].clientX;
+    touchScrollOff = false;
+    dragSrcId = itemId;
+  }, { passive: true });
+  card.addEventListener('touchmove', e => {
+    const dy = Math.abs(e.touches[0].clientY - touchStartY);
+    const dx = Math.abs(e.touches[0].clientX - touchStartX);
+    // Only hijack vertical drags >8px; ignore horizontal scrolling
+    if (dy < 8 && !touchClone) return;
+    if (dx > dy * 1.5 && !touchClone) { touchScrollOff = true; return; }
+    if (touchScrollOff) return;
+    e.preventDefault();
+    if (!touchClone) {
+      touchClone = card.cloneNode(true);
+      touchClone.style.cssText = `position:fixed;opacity:0.85;pointer-events:none;z-index:9999;width:${card.offsetWidth}px;left:${card.getBoundingClientRect().left}px;box-shadow:0 8px 24px rgba(0,0,0,0.4);`;
+      document.body.appendChild(touchClone);
+      card.classList.add('queue-card--dragging');
+    }
+    touchClone.style.top = (e.touches[0].clientY - 30) + 'px';
+    // Highlight drop target
+    document.querySelectorAll('.queue-card--dragover').forEach(el => el.classList.remove('queue-card--dragover'));
+    const el = document.elementFromPoint(e.touches[0].clientX, e.touches[0].clientY)?.closest('.queue-card');
+    if (el && el !== card) el.classList.add('queue-card--dragover');
+  }, { passive: false });
+  card.addEventListener('touchend', e => {
+    if (touchClone) { touchClone.remove(); touchClone = null; }
+    card.classList.remove('queue-card--dragging');
+    if (touchScrollOff) { dragSrcId = null; return; }
+    const el = document.elementFromPoint(e.changedTouches[0].clientX, e.changedTouches[0].clientY)?.closest('.queue-card');
+    document.querySelectorAll('.queue-card--dragover').forEach(x => x.classList.remove('queue-card--dragover'));
+    if (el) {
+      const targetId = parseInt(el.dataset.itemId, 10);
+      if (targetId && targetId !== dragSrcId) _reorderQueue(dragSrcId, targetId);
+    }
+    dragSrcId = null;
+  });
+}
+
+function _reorderQueue(srcId, destId) {
+  const srcIdx  = queue.findIndex(i => i.id === srcId);
+  const destIdx = queue.findIndex(i => i.id === destId);
+  if (srcIdx === -1 || destIdx === -1) return;
+  const [moved] = queue.splice(srcIdx, 1);
+  queue.splice(destIdx, 0, moved);
+  // Switch to custom sort so order is preserved
+  queueSortMode = 'custom';
+  const sel = document.getElementById('queue-sort');
+  if (sel) sel.value = 'custom';
+  saveQueue(); renderQueue(); updateBadge();
+}
+
+// ─── Render Queue ─────────────────────────────────────────────────────────────
+function renderQueue() {
+  const list  = document.getElementById('queue-list');
+  const empty = document.getElementById('queue-empty');
+  document.getElementById('queue-count-label').textContent = `${queue.length} item${queue.length !== 1 ? 's' : ''}`;
+
+  const filtered = _getFilteredQueue();
+
+  if (!queue.length) {
+    empty.style.display = 'flex'; list.querySelectorAll('.queue-card').forEach(el => el.remove()); return;
+  }
+  empty.style.display = 'none'; list.innerHTML = ''; list.appendChild(empty);
+
+  if (filtered.length === 0 && queueSearchTerm) {
+    const noResult = document.createElement('div');
+    noResult.className = 'queue-empty';
+    noResult.innerHTML = '<div class="empty-icon">🔍</div><p>No results for "' + escapeHtml(queueSearchTerm) + '"</p>';
+    list.appendChild(noResult);
+    return;
+  }
+
+  filtered.forEach((item, i) => {
+    const isExpanded = expandedCardIds.has(item.id);
+    const isLong = item.content.length > 120;
+    const preview = isExpanded ? item.content : (isLong ? item.content.slice(0, 120) + '…' : item.content);
+
+    const card = document.createElement('div');
+    card.className = 'queue-card';
+    card.dataset.itemId = item.id;
+
+    card.innerHTML = `
+      <div class="card-header">
+        <div class="card-meta">
+          ${settings.shownumbers ? `<span class="card-num">${i + 1}</span>` : ''}
+          ${item.label  ? `<span class="card-label">${escapeHtml(item.label)}</span>` : ''}
+          ${item.source ? `<span class="card-source">${escapeHtml(item.source)}</span>` : ''}
+        </div>
+        <div class="card-actions">
+          <button class="card-btn card-btn--copy" onclick="copyItem(${item.id})">Copy</button>
+          <button class="card-btn card-btn--delete" onclick="removeItem(${item.id})">✕</button>
+        </div>
+      </div>
+      <div class="card-preview${isExpanded ? ' card-preview--expanded' : ''}" onclick="${isLong ? `toggleCardExpand(${item.id})` : ''}" style="${isLong ? 'cursor:pointer' : ''}">${escapeHtml(preview)}</div>
+      ${isLong ? `<div class="card-expand-hint">${isExpanded ? '▲ Show less' : '▼ Show more'}</div>` : ''}
+      <div class="card-time">${formatTime(item.added)}</div>`;
+
+    _initCardDrag(card, item.id);
+    list.appendChild(card);
+  });
 }
 
 // ─── Upload ───────────────────────────────────────────────────────────────────
@@ -665,7 +827,6 @@ function initUploadInput() {
   document.body.appendChild(input);
 }
 function triggerUpload() { const i = document.getElementById('file-upload-input'); if (i) { i.value = ''; i.click(); } }
-
 async function handleFileUpload(event) {
   const uploaded = Array.from(event.target.files || []);
   if (!uploaded.length) return;
@@ -674,18 +835,13 @@ async function handleFileUpload(event) {
     try {
       const id = Date.now() + Math.random();
       const meta = { id, name: file.name, type: file.type || 'text/plain', size: file.size, ocrText: null, added: new Date().toISOString() };
-
       if (isImageFile(file)) {
-        // Store image blob in IDB — no base64 in localStorage
         await idbFilePut({ id, blob: file, mimeType: file.type });
-        // Keep a small object URL preview for the viewer; regenerated on open
         files.push(meta);
       } else if (isPdfFile(file)) {
-        // Store PDF blob in IDB; extract text on demand
         await idbFilePut({ id, blob: file, mimeType: 'application/pdf' });
         files.push(meta);
       } else {
-        // Text/code files: read as UTF-8, store inline (typically small)
         const content = await readTextFile(file);
         files.push({ ...meta, content });
       }
@@ -695,7 +851,6 @@ async function handleFileUpload(event) {
   saveFiles(); renderFiles(); updateStats();
   showToast(`✓ Added ${added} file${added !== 1 ? 's' : ''}`);
 }
-
 function readTextFile(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -736,7 +891,6 @@ function renderFiles() {
   });
 }
 
-// ─── PDF text extraction (on-demand via PDF.js) ───────────────────────────────
 async function extractPdfFileText(fileId) {
   const file = files.find(f => f.id == fileId);
   if (!file) return;
@@ -766,19 +920,15 @@ async function openFileViewer(id) {
   document.getElementById('file-viewer').style.display     = 'flex';
   document.getElementById('viewer-filename').textContent   = file.name;
   const content = document.getElementById('viewer-content');
-
   const isImg = IMAGE_TYPES.includes(file.type) || IMAGE_EXTS.includes(file.name.split('.').pop().toLowerCase());
   const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-
   if (isImg) {
-    // Fetch blob from IDB and create object URL for display
     try {
       const stored = await idbFileGet(id);
       if (stored?.blob) {
         const url = URL.createObjectURL(stored.blob);
         content.innerHTML = `<img src="${url}" alt="${escapeHtml(file.name)}" style="max-width:100%;border-radius:8px;" />`
           + (file.ocrText ? `<pre style="margin-top:1rem;white-space:pre-wrap;font-size:0.85rem;opacity:0.8">${escapeHtml(file.ocrText)}</pre>` : '');
-        // Revoke after a short delay (image has loaded)
         setTimeout(() => URL.revokeObjectURL(url), 10000);
       } else {
         content.textContent = '[Image data not found — please re-upload]';
@@ -789,7 +939,6 @@ async function openFileViewer(id) {
   } else {
     content.textContent = file.content || '';
   }
-
   content.dataset.fileId   = id;
   content.dataset.fileName = file.name;
   const btn = document.getElementById('add-selection-btn');
@@ -801,7 +950,6 @@ async function openFileViewer(id) {
     }, { passive: true });
   }
 }
-
 function closeFileViewer() {
   _capturedSelection = '';
   document.getElementById('file-viewer').style.display     = 'none';
@@ -815,7 +963,6 @@ function addSelectionToQueue() {
   _capturedSelection = ''; window.getSelection()?.removeAllRanges();
 }
 async function removeFile(id) {
-  // Delete blob from IDB if present
   try { await idbFileDelete(id); } catch {}
   files = files.filter(f => f.id != id);
   saveFiles(); renderFiles(); updateStats(); showToast('File removed');
@@ -877,34 +1024,6 @@ function updateStats() {
   document.getElementById('stat-recordings').textContent = recordings.length;
   const bytes = new Blob([localStorage.getItem(STORAGE_KEY)||'']).size + new Blob([localStorage.getItem(FILES_KEY)||'']).size;
   document.getElementById('stat-storage').textContent = formatBytes(bytes);
-}
-
-// ─── Render Queue ─────────────────────────────────────────────────────────────
-function renderQueue() {
-  const list  = document.getElementById('queue-list');
-  const empty = document.getElementById('queue-empty');
-  document.getElementById('queue-count-label').textContent = `${queue.length} item${queue.length !== 1 ? 's' : ''}`;
-  if (!queue.length) { empty.style.display = 'flex'; list.querySelectorAll('.queue-card').forEach(el => el.remove()); return; }
-  empty.style.display = 'none'; list.innerHTML = ''; list.appendChild(empty);
-  queue.forEach((item, i) => {
-    const card = document.createElement('div'); card.className = 'queue-card';
-    const preview = item.content.length > 120 ? item.content.slice(0, 120) + '…' : item.content;
-    card.innerHTML = `
-      <div class="card-header">
-        <div class="card-meta">
-          ${settings.shownumbers ? `<span class="card-num">${i + 1}</span>` : ''}
-          ${item.label  ? `<span class="card-label">${escapeHtml(item.label)}</span>` : ''}
-          ${item.source ? `<span class="card-source">${escapeHtml(item.source)}</span>` : ''}
-        </div>
-        <div class="card-actions">
-          <button class="card-btn card-btn--copy" onclick="copyItem(${item.id})">Copy</button>
-          <button class="card-btn card-btn--delete" onclick="removeItem(${item.id})">✕</button>
-        </div>
-      </div>
-      <div class="card-preview">${escapeHtml(preview)}</div>
-      <div class="card-time">${formatTime(item.added)}</div>`;
-    list.appendChild(card);
-  });
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
