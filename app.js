@@ -12,6 +12,9 @@ let settings = {
   separator:   '\n\n---\n\n',
 };
 
+// ─── Captured selection (iOS: saved on touchstart before tap clears it) ───────
+let _capturedSelection = '';
+
 // ─── Init ─────────────────────────────────────────────────────────
 function init() {
   loadQueue();
@@ -23,6 +26,27 @@ function init() {
   applySettings();
   initCompose();
   initUploadInput();
+  initSelectionCapture();
+}
+
+// ─── Selection capture (must run once after DOM ready) ────────────
+function initSelectionCapture() {
+  // On every selectionchange, snapshot the selected text
+  document.addEventListener('selectionchange', () => {
+    const sel = window.getSelection();
+    const txt = sel ? sel.toString().trim() : '';
+    if (txt) _capturedSelection = txt;
+  });
+
+  // Also grab it fresh on touchstart of the button, before iOS clears it
+  const btn = document.getElementById('add-selection-btn');
+  if (btn) {
+    btn.addEventListener('touchstart', () => {
+      const sel = window.getSelection();
+      const txt = sel ? sel.toString().trim() : '';
+      if (txt) _capturedSelection = txt;
+    }, { passive: true });
+  }
 }
 
 // ─── Storage ──────────────────────────────────────────────────────
@@ -247,6 +271,9 @@ function openFileViewer(id) {
   const file = files.find(f => f.id == id);
   if (!file) return;
 
+  // Reset captured selection when opening a new file
+  _capturedSelection = '';
+
   document.getElementById('files-list-view').style.display  = 'none';
   document.getElementById('file-viewer').style.display      = 'flex';
   document.getElementById('viewer-filename').textContent    = file.name;
@@ -255,16 +282,32 @@ function openFileViewer(id) {
   content.textContent = file.content;
   content.dataset.fileId   = id;
   content.dataset.fileName = file.name;
+
+  // Re-attach touchstart listener to the button each time viewer opens
+  const btn = document.getElementById('add-selection-btn');
+  if (btn) {
+    // Clone to remove old listeners, then re-add
+    const fresh = btn.cloneNode(true);
+    btn.parentNode.replaceChild(fresh, btn);
+    fresh.addEventListener('touchstart', () => {
+      const sel = window.getSelection();
+      const txt = sel ? sel.toString().trim() : '';
+      if (txt) _capturedSelection = txt;
+    }, { passive: true });
+  }
 }
 
 function closeFileViewer() {
+  _capturedSelection = '';
   document.getElementById('file-viewer').style.display     = 'none';
   document.getElementById('files-list-view').style.display = 'block';
 }
 
 function addSelectionToQueue() {
+  // Try live selection first, fall back to what we captured on touchstart
   const sel = window.getSelection();
-  const text = sel ? sel.toString().trim() : '';
+  const liveTxt = sel ? sel.toString().trim() : '';
+  const text = liveTxt || _capturedSelection;
 
   if (!text) {
     showToast('Select some text first, then tap + Add Selection', 'error');
@@ -275,7 +318,10 @@ function addSelectionToQueue() {
   const fileName = content.dataset.fileName || 'file';
 
   addToQueue(text, null, fileName);
-  sel.removeAllRanges();
+
+  // Clear both
+  _capturedSelection = '';
+  if (sel) sel.removeAllRanges();
 }
 
 function removeFile(id) {
