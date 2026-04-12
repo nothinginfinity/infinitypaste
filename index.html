@@ -4,9 +4,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <meta name="apple-mobile-web-app-title" content="InfinityPaste">
-  <meta name="theme-color" content="#000000">
+  <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#111111" media="(prefers-color-scheme: dark)">
   <title>InfinityPaste</title>
   <link rel="manifest" href="manifest.json">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
@@ -14,23 +15,18 @@
 </head>
 <body>
   <div id="app">
-
-    <!-- Header -->
-    <header class="header">
-      <div class="header-title">
-        <span class="header-logo">∞</span>
-        <span>InfinityPaste</span>
-      </div>
-      <div class="header-badge" id="queue-badge" onclick="switchTab('queue')">
-        📋 <span id="badge-count">0</span>
-      </div>
-    </header>
-
     <!-- Tab Bar -->
     <nav class="tab-bar">
       <button class="tab active" id="tab-collect" onclick="switchTab('collect')">
-        <span class="tab-icon">＋</span>
+        <span class="tab-icon">✏️</span>
         Collect
+      </button>
+      <button class="tab" id="tab-queue" onclick="switchTab('queue')">
+        <span class="tab-icon">📋</span>
+        Queue
+        <span class="queue-badge" id="queue-badge" style="display:none">
+          <span id="badge-count">0</span>
+        </span>
       </button>
       <button class="tab" id="tab-files" onclick="switchTab('files')">
         <span class="tab-icon">📁</span>
@@ -40,12 +36,8 @@
         <span class="tab-icon">🎙️</span>
         Record
       </button>
-      <button class="tab" id="tab-queue" onclick="switchTab('queue')">
-        <span class="tab-icon">📋</span>
-        Queue
-      </button>
       <button class="tab" id="tab-compose" onclick="switchTab('compose')">
-        <span class="tab-icon">✏️</span>
+        <span class="tab-icon">📝</span>
         Compose
       </button>
       <button class="tab" id="tab-settings" onclick="switchTab('settings')">
@@ -59,10 +51,23 @@
       <div class="collect-area">
         <label class="input-label">Paste or type content</label>
         <textarea id="collect-input" class="collect-textarea"
+          oninput="onCollectInput()"
           placeholder="Paste code, text, notes, URLs — anything you want to save to the queue…" rows="8"></textarea>
+
+        <!-- Phase 3: URL Fetch Bar (shown when URL detected) -->
+        <div id="fetch-bar" style="display:none;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">
+          <span style="font-size:0.8rem;color:var(--color-text-muted, #888)">🌐 URL detected</span>
+          <button id="fetch-btn" class="btn btn-accent btn-sm" onclick="fetchUrl()">🌐 Fetch</button>
+          <button class="btn btn-secondary btn-sm" onclick="saveCurrentAsFile()" title="Save as File after fetching">💾 Save as File</button>
+        </div>
+
         <div class="collect-meta">
-          <input id="collect-label" class="label-input" type="text"
-            placeholder="Label (optional) — e.g. README, App.tsx fix, prompt" />
+          <div style="position:relative;flex:1">
+            <input id="collect-label" class="label-input" type="text"
+              oninput="onLabelInput()"
+              placeholder="Label (optional) — e.g. README, App.tsx fix, prompt" />
+            <span id="autotitle-badge" style="display:none;position:absolute;right:6px;top:50%;transform:translateY(-50%);font-size:0.65rem;background:var(--color-primary-highlight,#cedcd8);color:var(--color-primary,#01696f);padding:2px 6px;border-radius:9999px;pointer-events:none;white-space:nowrap">✨ Auto</span>
+          </div>
         </div>
         <button class="btn btn-primary btn-full" onclick="addToQueue()">+ Add to Queue</button>
         <button class="btn btn-secondary btn-full" onclick="pasteFromClipboard()">📋 Paste from Clipboard</button>
@@ -119,10 +124,10 @@
         <button class="btn btn-danger btn-sm" onclick="clearAllRecordings()">Clear All</button>
       </div>
       <div id="recordings-list" class="recordings-list">
-        <div class="queue-empty" id="recordings-empty">
+        <div class="queue-empty" id="recordings-empty" style="display:flex">
           <div class="empty-icon">🎙️</div>
           <p>No recordings yet.</p>
-          <p class="empty-hint">Tap the mic button above to start.</p>
+          <p class="empty-hint">Tap the button above to start recording.</p>
         </div>
       </div>
     </section>
@@ -130,28 +135,27 @@
     <!-- Queue Tab -->
     <section class="tab-content" id="view-queue">
       <div class="queue-toolbar">
-        <span class="queue-count" id="queue-count-label">0 items</span>
-        <div class="queue-actions">
-          <button class="btn btn-accent btn-sm" onclick="dumpToCompose()">→ Compose</button>
-          <button class="btn btn-accent btn-sm" onclick="copyAll()">Copy All</button>
-          <button class="btn btn-danger btn-sm" onclick="clearQueue()">Clear</button>
+        <div class="queue-search-row">
+          <input id="queue-search" class="queue-search-input" type="search"
+            placeholder="Search queue…" oninput="onQueueSearch()" />
+          <select id="queue-sort" class="queue-sort-select" onchange="onQueueSort()">
+            <option value="newest">Newest</option>
+            <option value="oldest">Oldest</option>
+            <option value="label">Label A–Z</option>
+            <option value="source">Source A–Z</option>
+            <option value="custom">Custom</option>
+          </select>
+        </div>
+        <div class="queue-actions-row">
+          <button class="btn btn-primary btn-sm" onclick="copyAll()">📋 Copy All</button>
+          <button class="btn btn-secondary btn-sm" onclick="dumpToCompose()">📝 Dump to Compose</button>
+          <button class="btn btn-danger btn-sm" onclick="clearQueue()">🗑 Clear</button>
         </div>
       </div>
-      <!-- Phase 2: Search + Sort controls -->
-      <div class="queue-search-row">
-        <input id="queue-search" class="queue-search-input" type="search" placeholder="🔍 Search queue…" oninput="onQueueSearch()" />
-        <select id="queue-sort" class="queue-sort-select" onchange="onQueueSort()">
-          <option value="newest">Newest</option>
-          <option value="oldest">Oldest</option>
-          <option value="label">Label A–Z</option>
-          <option value="source">Source</option>
-          <option value="custom">Custom</option>
-        </select>
-      </div>
       <div id="queue-list" class="queue-list">
-        <div class="queue-empty" id="queue-empty">
-          <div class="empty-icon">∞</div>
-          <p>Your queue is empty.</p>
+        <div class="queue-empty" id="queue-empty" style="display:flex">
+          <div class="empty-icon">📋</div>
+          <p>Queue is empty.</p>
           <p class="empty-hint">Collect tab or select text in Files to add items.</p>
         </div>
       </div>
@@ -162,15 +166,13 @@
       <div class="compose-toolbar">
         <span class="section-title">Compose</span>
         <div class="compose-actions">
-          <button class="btn btn-accent btn-sm" onclick="dumpToCompose()">⬇ Dump Queue</button>
-          <button class="btn btn-primary btn-sm" onclick="copyCompose()">Copy All</button>
-          <button class="btn btn-secondary btn-sm" onclick="shareCompose()">Share</button>
-          <button class="btn btn-danger btn-sm" onclick="clearCompose()">Clear</button>
+          <button class="btn btn-primary btn-sm" onclick="copyCompose()">📋 Copy</button>
+          <button class="btn btn-secondary btn-sm" onclick="shareCompose()">↑ Share</button>
+          <button class="btn btn-danger btn-sm" onclick="clearCompose()">🗑 Clear</button>
         </div>
       </div>
-      <textarea id="compose-area" class="compose-textarea"
-        placeholder="Your assembled document appears here. Tap '⬇ Dump Queue' to pull in all queued items, or type/paste freely…"></textarea>
-      <div class="compose-stats" id="compose-stats">0 chars · 0 words</div>
+      <div id="compose-stats" class="compose-stats">0 chars · 0 words</div>
+      <textarea id="compose-area" class="compose-textarea" placeholder="Your composed document will appear here. Use Dump to Compose from the Queue tab, or type freely…"></textarea>
     </section>
 
     <!-- Settings Tab -->
@@ -219,19 +221,17 @@
               </div>
             </div>
             <div class="key-provider-right">
-              <span class="key-dot" id="dot-openai"></span>
-              <span class="key-chevron" id="chevron-openai">›</span>
+              <span class="key-status-dot" id="key-dot-openai"></span>
+              <span class="key-status-text" id="key-status-openai"></span>
+              <span class="key-provider-arrow">▼</span>
             </div>
           </div>
-          <div class="key-provider-body" id="body-openai" style="display:none">
-            <div class="key-provider-tag">🎙️ Voice · ✍️ Summarize · 💬 Chat · 🔍 OCR screenshots</div>
-            <div class="key-input-wrap">
-              <input type="password" id="setting-openai-key" class="key-input"
-                placeholder="sk-..." autocomplete="off" spellcheck="false"
-                oninput="saveApiKey('openai', this.value)" />
-              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-openai-key', this)">👁️</button>
+          <div class="key-provider-body" id="key-body-openai" style="display:none">
+            <input type="password" id="key-input-openai" class="key-input" placeholder="sk-..." autocomplete="off" />
+            <div class="key-actions">
+              <button class="btn btn-primary btn-sm" onclick="saveApiKey('openai', document.getElementById('key-input-openai').value)">Save</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteApiKey('openai')">Remove</button>
             </div>
-            <div class="key-status" id="openai-key-status"></div>
           </div>
         </div>
 
@@ -242,50 +242,46 @@
               <span class="key-provider-icon">⚡</span>
               <div>
                 <div class="key-provider-name">Groq</div>
-                <div class="key-provider-models">Llama 3.3 · Mixtral · Gemma</div>
+                <div class="key-provider-models">Llama 3 · Mixtral · Gemma</div>
               </div>
             </div>
             <div class="key-provider-right">
-              <span class="key-dot" id="dot-groq"></span>
-              <span class="key-chevron" id="chevron-groq">›</span>
+              <span class="key-status-dot" id="key-dot-groq"></span>
+              <span class="key-status-text" id="key-status-groq"></span>
+              <span class="key-provider-arrow">▼</span>
             </div>
           </div>
-          <div class="key-provider-body" id="body-groq" style="display:none">
-            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · ⚡ Ultra-fast inference</div>
-            <div class="key-input-wrap">
-              <input type="password" id="setting-groq-key" class="key-input"
-                placeholder="gsk_..." autocomplete="off" spellcheck="false"
-                oninput="saveApiKey('groq', this.value)" />
-              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-groq-key', this)">👁️</button>
+          <div class="key-provider-body" id="key-body-groq" style="display:none">
+            <input type="password" id="key-input-groq" class="key-input" placeholder="gsk_..." autocomplete="off" />
+            <div class="key-actions">
+              <button class="btn btn-primary btn-sm" onclick="saveApiKey('groq', document.getElementById('key-input-groq').value)">Save</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteApiKey('groq')">Remove</button>
             </div>
-            <div class="key-status" id="groq-key-status"></div>
           </div>
         </div>
 
-        <!-- Google Gemini -->
+        <!-- Gemini -->
         <div class="key-provider-card" id="key-card-gemini">
           <div class="key-provider-header" onclick="toggleKeyCard('gemini')">
             <div class="key-provider-left">
               <span class="key-provider-icon">💎</span>
               <div>
-                <div class="key-provider-name">Google Gemini</div>
-                <div class="key-provider-models">Gemini 2.0 Flash · 2.5 Pro</div>
+                <div class="key-provider-name">Gemini</div>
+                <div class="key-provider-models">Gemini 2.0 · 1.5 Pro · Flash</div>
               </div>
             </div>
             <div class="key-provider-right">
-              <span class="key-dot" id="dot-gemini"></span>
-              <span class="key-chevron" id="chevron-gemini">›</span>
+              <span class="key-status-dot" id="key-dot-gemini"></span>
+              <span class="key-status-text" id="key-status-gemini"></span>
+              <span class="key-provider-arrow">▼</span>
             </div>
           </div>
-          <div class="key-provider-body" id="body-gemini" style="display:none">
-            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · 📄 Long context · 🔍 OCR screenshots</div>
-            <div class="key-input-wrap">
-              <input type="password" id="setting-gemini-key" class="key-input"
-                placeholder="AIza..." autocomplete="off" spellcheck="false"
-                oninput="saveApiKey('gemini', this.value)" />
-              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-gemini-key', this)">👁️</button>
+          <div class="key-provider-body" id="key-body-gemini" style="display:none">
+            <input type="password" id="key-input-gemini" class="key-input" placeholder="AIza..." autocomplete="off" />
+            <div class="key-actions">
+              <button class="btn btn-primary btn-sm" onclick="saveApiKey('gemini', document.getElementById('key-input-gemini').value)">Save</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteApiKey('gemini')">Remove</button>
             </div>
-            <div class="key-status" id="gemini-key-status"></div>
           </div>
         </div>
 
@@ -293,26 +289,24 @@
         <div class="key-provider-card" id="key-card-anthropic">
           <div class="key-provider-header" onclick="toggleKeyCard('anthropic')">
             <div class="key-provider-left">
-              <span class="key-provider-icon">🔺</span>
+              <span class="key-provider-icon">🧠</span>
               <div>
                 <div class="key-provider-name">Anthropic</div>
-                <div class="key-provider-models">Claude 3.5 Sonnet · Claude 3 Haiku</div>
+                <div class="key-provider-models">Claude 3.5 · Haiku · Sonnet</div>
               </div>
             </div>
             <div class="key-provider-right">
-              <span class="key-dot" id="dot-anthropic"></span>
-              <span class="key-chevron" id="chevron-anthropic">›</span>
+              <span class="key-status-dot" id="key-dot-anthropic"></span>
+              <span class="key-status-text" id="key-status-anthropic"></span>
+              <span class="key-provider-arrow">▼</span>
             </div>
           </div>
-          <div class="key-provider-body" id="body-anthropic" style="display:none">
-            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · 📄 Long context</div>
-            <div class="key-input-wrap">
-              <input type="password" id="setting-anthropic-key" class="key-input"
-                placeholder="sk-ant-..." autocomplete="off" spellcheck="false"
-                oninput="saveApiKey('anthropic', this.value)" />
-              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-anthropic-key', this)">👁️</button>
+          <div class="key-provider-body" id="key-body-anthropic" style="display:none">
+            <input type="password" id="key-input-anthropic" class="key-input" placeholder="sk-ant-..." autocomplete="off" />
+            <div class="key-actions">
+              <button class="btn btn-primary btn-sm" onclick="saveApiKey('anthropic', document.getElementById('key-input-anthropic').value)">Save</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteApiKey('anthropic')">Remove</button>
             </div>
-            <div class="key-status" id="anthropic-key-status"></div>
           </div>
         </div>
 
@@ -327,19 +321,17 @@
               </div>
             </div>
             <div class="key-provider-right">
-              <span class="key-dot" id="dot-xai"></span>
-              <span class="key-chevron" id="chevron-xai">›</span>
+              <span class="key-status-dot" id="key-dot-xai"></span>
+              <span class="key-status-text" id="key-status-xai"></span>
+              <span class="key-provider-arrow">▼</span>
             </div>
           </div>
-          <div class="key-provider-body" id="body-xai" style="display:none">
-            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · 🌐 Real-time knowledge</div>
-            <div class="key-input-wrap">
-              <input type="password" id="setting-xai-key" class="key-input"
-                placeholder="xai-..." autocomplete="off" spellcheck="false"
-                oninput="saveApiKey('xai', this.value)" />
-              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-xai-key', this)">👁️</button>
+          <div class="key-provider-body" id="key-body-xai" style="display:none">
+            <input type="password" id="key-input-xai" class="key-input" placeholder="xai-..." autocomplete="off" />
+            <div class="key-actions">
+              <button class="btn btn-primary btn-sm" onclick="saveApiKey('xai', document.getElementById('key-input-xai').value)">Save</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteApiKey('xai')">Remove</button>
             </div>
-            <div class="key-status" id="xai-key-status"></div>
           </div>
         </div>
 
@@ -347,26 +339,24 @@
         <div class="key-provider-card" id="key-card-mistral">
           <div class="key-provider-header" onclick="toggleKeyCard('mistral')">
             <div class="key-provider-left">
-              <span class="key-provider-icon">🌪️</span>
+              <span class="key-provider-icon">🌊</span>
               <div>
                 <div class="key-provider-name">Mistral</div>
-                <div class="key-provider-models">Mistral Large · Codestral · Nemo</div>
+                <div class="key-provider-models">Mistral Small · Large · Codestral</div>
               </div>
             </div>
             <div class="key-provider-right">
-              <span class="key-dot" id="dot-mistral"></span>
-              <span class="key-chevron" id="chevron-mistral">›</span>
+              <span class="key-status-dot" id="key-dot-mistral"></span>
+              <span class="key-status-text" id="key-status-mistral"></span>
+              <span class="key-provider-arrow">▼</span>
             </div>
           </div>
-          <div class="key-provider-body" id="body-mistral" style="display:none">
-            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · 💻 Code</div>
-            <div class="key-input-wrap">
-              <input type="password" id="setting-mistral-key" class="key-input"
-                placeholder="..." autocomplete="off" spellcheck="false"
-                oninput="saveApiKey('mistral', this.value)" />
-              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-mistral-key', this)">👁️</button>
+          <div class="key-provider-body" id="key-body-mistral" style="display:none">
+            <input type="password" id="key-input-mistral" class="key-input" placeholder="Your Mistral API key" autocomplete="off" />
+            <div class="key-actions">
+              <button class="btn btn-primary btn-sm" onclick="saveApiKey('mistral', document.getElementById('key-input-mistral').value)">Save</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteApiKey('mistral')">Remove</button>
             </div>
-            <div class="key-status" id="mistral-key-status"></div>
           </div>
         </div>
 
@@ -377,23 +367,21 @@
               <span class="key-provider-icon">🐋</span>
               <div>
                 <div class="key-provider-name">DeepSeek</div>
-                <div class="key-provider-models">DeepSeek V3 · R1 Reasoning</div>
+                <div class="key-provider-models">DeepSeek Chat · Coder</div>
               </div>
             </div>
             <div class="key-provider-right">
-              <span class="key-dot" id="dot-deepseek"></span>
-              <span class="key-chevron" id="chevron-deepseek">›</span>
+              <span class="key-status-dot" id="key-dot-deepseek"></span>
+              <span class="key-status-text" id="key-status-deepseek"></span>
+              <span class="key-provider-arrow">▼</span>
             </div>
           </div>
-          <div class="key-provider-body" id="body-deepseek" style="display:none">
-            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · 🔍 Reasoning</div>
-            <div class="key-input-wrap">
-              <input type="password" id="setting-deepseek-key" class="key-input"
-                placeholder="sk-..." autocomplete="off" spellcheck="false"
-                oninput="saveApiKey('deepseek', this.value)" />
-              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-deepseek-key', this)">👁️</button>
+          <div class="key-provider-body" id="key-body-deepseek" style="display:none">
+            <input type="password" id="key-input-deepseek" class="key-input" placeholder="sk-..." autocomplete="off" />
+            <div class="key-actions">
+              <button class="btn btn-primary btn-sm" onclick="saveApiKey('deepseek', document.getElementById('key-input-deepseek').value)">Save</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteApiKey('deepseek')">Remove</button>
             </div>
-            <div class="key-status" id="deepseek-key-status"></div>
           </div>
         </div>
 
@@ -401,26 +389,24 @@
         <div class="key-provider-card" id="key-card-cerebras">
           <div class="key-provider-header" onclick="toggleKeyCard('cerebras')">
             <div class="key-provider-left">
-              <span class="key-provider-icon">🧠</span>
+              <span class="key-provider-icon">🧩</span>
               <div>
                 <div class="key-provider-name">Cerebras</div>
-                <div class="key-provider-models">Llama 3.3 70B · Llama 3.1 8B</div>
+                <div class="key-provider-models">Llama 3.1 · 70B · 8B</div>
               </div>
             </div>
             <div class="key-provider-right">
-              <span class="key-dot" id="dot-cerebras"></span>
-              <span class="key-chevron" id="chevron-cerebras">›</span>
+              <span class="key-status-dot" id="key-dot-cerebras"></span>
+              <span class="key-status-text" id="key-status-cerebras"></span>
+              <span class="key-provider-arrow">▼</span>
             </div>
           </div>
-          <div class="key-provider-body" id="body-cerebras" style="display:none">
-            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · ⚡ Ultra-fast inference</div>
-            <div class="key-input-wrap">
-              <input type="password" id="setting-cerebras-key" class="key-input"
-                placeholder="csk-..." autocomplete="off" spellcheck="false"
-                oninput="saveApiKey('cerebras', this.value)" />
-              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-cerebras-key', this)">👁️</button>
+          <div class="key-provider-body" id="key-body-cerebras" style="display:none">
+            <input type="password" id="key-input-cerebras" class="key-input" placeholder="csk-..." autocomplete="off" />
+            <div class="key-actions">
+              <button class="btn btn-primary btn-sm" onclick="saveApiKey('cerebras', document.getElementById('key-input-cerebras').value)">Save</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteApiKey('cerebras')">Remove</button>
             </div>
-            <div class="key-status" id="cerebras-key-status"></div>
           </div>
         </div>
 
@@ -430,24 +416,22 @@
             <div class="key-provider-left">
               <span class="key-provider-icon">🎆</span>
               <div>
-                <div class="key-provider-name">Fireworks AI</div>
-                <div class="key-provider-models">Llama 4 · Qwen · DeepSeek-R1</div>
+                <div class="key-provider-name">Fireworks</div>
+                <div class="key-provider-models">Llama · Mixtral · DBRX</div>
               </div>
             </div>
             <div class="key-provider-right">
-              <span class="key-dot" id="dot-fireworks"></span>
-              <span class="key-chevron" id="chevron-fireworks">›</span>
+              <span class="key-status-dot" id="key-dot-fireworks"></span>
+              <span class="key-status-text" id="key-status-fireworks"></span>
+              <span class="key-provider-arrow">▼</span>
             </div>
           </div>
-          <div class="key-provider-body" id="body-fireworks" style="display:none">
-            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · 🖼️ Image gen</div>
-            <div class="key-input-wrap">
-              <input type="password" id="setting-fireworks-key" class="key-input"
-                placeholder="fw-..." autocomplete="off" spellcheck="false"
-                oninput="saveApiKey('fireworks', this.value)" />
-              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-fireworks-key', this)">👁️</button>
+          <div class="key-provider-body" id="key-body-fireworks" style="display:none">
+            <input type="password" id="key-input-fireworks" class="key-input" placeholder="fw-..." autocomplete="off" />
+            <div class="key-actions">
+              <button class="btn btn-primary btn-sm" onclick="saveApiKey('fireworks', document.getElementById('key-input-fireworks').value)">Save</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteApiKey('fireworks')">Remove</button>
             </div>
-            <div class="key-status" id="fireworks-key-status"></div>
           </div>
         </div>
 
@@ -455,41 +439,54 @@
         <div class="key-provider-card" id="key-card-sambanova">
           <div class="key-provider-header" onclick="toggleKeyCard('sambanova')">
             <div class="key-provider-left">
-              <span class="key-provider-icon">🔴</span>
+              <span class="key-provider-icon">🔥</span>
               <div>
                 <div class="key-provider-name">SambaNova</div>
-                <div class="key-provider-models">Llama 4 Scout · DeepSeek-R1</div>
+                <div class="key-provider-models">Llama 3.1 · 405B · 70B</div>
               </div>
             </div>
             <div class="key-provider-right">
-              <span class="key-dot" id="dot-sambanova"></span>
-              <span class="key-chevron" id="chevron-sambanova">›</span>
+              <span class="key-status-dot" id="key-dot-sambanova"></span>
+              <span class="key-status-text" id="key-status-sambanova"></span>
+              <span class="key-provider-arrow">▼</span>
             </div>
           </div>
-          <div class="key-provider-body" id="body-sambanova" style="display:none">
-            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · ⚡ High throughput</div>
-            <div class="key-input-wrap">
-              <input type="password" id="setting-sambanova-key" class="key-input"
-                placeholder="..." autocomplete="off" spellcheck="false"
-                oninput="saveApiKey('sambanova', this.value)" />
-              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-sambanova-key', this)">👁️</button>
+          <div class="key-provider-body" id="key-body-sambanova" style="display:none">
+            <input type="password" id="key-input-sambanova" class="key-input" placeholder="Your SambaNova API key" autocomplete="off" />
+            <div class="key-actions">
+              <button class="btn btn-primary btn-sm" onclick="saveApiKey('sambanova', document.getElementById('key-input-sambanova').value)">Save</button>
+              <button class="btn btn-danger btn-sm" onclick="deleteApiKey('sambanova')">Remove</button>
             </div>
-            <div class="key-status" id="sambanova-key-status"></div>
           </div>
+        </div>
+
+        <!-- Phase 3: Safari Bookmarklet -->
+        <div class="settings-section-title">Safari Bookmarklet</div>
+        <div class="settings-ai-info">
+          📎 Grab any page's full text into InfinityPaste with one tap — including CORS-blocked pages like Perplexity threads.
+        </div>
+        <div class="settings-row" style="cursor:pointer" onclick="generateBookmarklet()">
+          <span>Generate Bookmarklet</span>
+          <span class="settings-arrow">›</span>
+        </div>
+        <div id="bookmarklet-area" style="display:none;padding:12px 0 4px;gap:8px;flex-direction:column">
+          <p style="font-size:0.8rem;color:var(--color-text-muted,#888);line-height:1.5;margin-bottom:6px">1. Tap <strong>Copy URL</strong> below.<br>2. In Safari, bookmark any page (share → Add Bookmark).<br>3. Edit that bookmark → paste the copied URL as the address.<br>4. Done — tap it on any page to send text here.</p>
+          <textarea id="bookmarklet-url" class="collect-textarea" rows="3" readonly style="font-size:0.7rem;word-break:break-all;font-family:monospace"></textarea>
+          <button class="btn btn-primary btn-sm" onclick="copyBookmarklet()">📋 Copy URL</button>
         </div>
 
         <!-- Storage -->
         <div class="settings-section-title">Storage</div>
         <div class="settings-row">
-          <span>Items in queue</span>
+          <span>Queue items</span>
           <span id="stat-count" class="settings-value">0</span>
         </div>
         <div class="settings-row">
-          <span>Files loaded</span>
+          <span>Files</span>
           <span id="stat-files" class="settings-value">0</span>
         </div>
         <div class="settings-row">
-          <span>Recordings saved</span>
+          <span>Recordings</span>
           <span id="stat-recordings" class="settings-value">0</span>
         </div>
         <div class="settings-row">
@@ -497,38 +494,33 @@
           <span id="stat-storage" class="settings-value">0 KB</span>
         </div>
         <div class="settings-row danger" onclick="clearQueue(true)">
-          <span>Clear all queue items</span>
+          <span>Clear Queue</span>
           <span class="settings-arrow">›</span>
         </div>
         <div class="settings-row danger" onclick="clearAllFiles()">
-          <span>Clear all uploaded files</span>
+          <span>Clear All Files</span>
           <span class="settings-arrow">›</span>
         </div>
         <div class="settings-row danger" onclick="clearAllRecordings()">
-          <span>Clear all recordings</span>
+          <span>Clear All Recordings</span>
           <span class="settings-arrow">›</span>
         </div>
 
         <div class="settings-section-title">About</div>
         <div class="settings-row">
           <span>Version</span>
-          <span class="settings-value">3.5.0</span>
+          <span class="settings-value">3.6.0</span>
         </div>
-        <div class="settings-row" onclick="window.open('https://github.com/nothinginfinity/infinitypaste', '_blank', 'noopener')">
-          <span>GitHub</span>
-          <span class="settings-arrow">›</span>
-        </div>
-
       </div>
     </section>
-
   </div>
 
   <div id="toast" class="toast"></div>
+  <input type="file" id="file-upload-input" multiple style="display:none" accept="*/*">
   <script src="app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('service-worker.js');
+      navigator.serviceWorker.register('service-worker.js').catch(() => {});
     }
   </script>
 </body>
