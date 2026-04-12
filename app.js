@@ -1,4 +1,4 @@
-// ─── InfinityPaste v3.2 — app.js ──────────────────────────────────────────────
+// ─── InfinityPaste v3.3.0 — app.js ───────────────────────────────────────────
 const STORAGE_KEY  = 'infinitypaste_queue';
 const SETTINGS_KEY = 'infinitypaste_settings';
 const FILES_KEY    = 'infinitypaste_files';
@@ -24,6 +24,11 @@ const PROVIDERS = [
 // Image MIME types that support OCR
 const IMAGE_TYPES = ['image/png','image/jpeg','image/jpg','image/gif','image/webp','image/bmp','image/tiff'];
 const IMAGE_EXTS  = ['png','jpg','jpeg','gif','webp','bmp','tiff','heic','heif'];
+
+// Tesseract CDN — loaded on demand, worker reused across calls
+const TESSERACT_CDN = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+let _tesseractWorker = null;   // reused worker instance
+let _tesseractLoaded = false;  // script tag injected flag
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let queue    = [];
@@ -253,7 +258,7 @@ async function clearAllRecordings() {
   renderRecordings(); updateStats(); showToast('All recordings cleared');
 }
 
-// ─── Transcribe (Whisper) ─────────────────────────────────────────────────────
+// ─── Transcribe (Whisper — OpenAI only, audio requires it) ───────────────────
 async function transcribeRecording(id) {
   if (!apiKeys.openai) {
     showToast('Add your OpenAI key in Settings → AI Keys', 'error');
@@ -286,98 +291,174 @@ async function transcribeRecording(id) {
   }
 }
 
-// ─── OCR — Extract text from screenshots / images ────────────────────────────
+// ─── OCR Phase 1: Free local Tesseract.js ─────────────────────────────────────
+// No API key needed. Runs entirely in the browser via WebAssembly.
+// Loads the Tesseract script once on demand; reuses the same worker for speed.
+
 function isImageFile(file) {
   const ext = file.name.split('.').pop().toLowerCase();
   return IMAGE_TYPES.includes(file.type) || IMAGE_EXTS.includes(ext);
+}
+
+function _loadTesseractScript() {
+  if (_tesseractLoaded) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = TESSERACT_CDN;
+    s.onload  = () => { _tesseractLoaded = true; resolve(); };
+    s.onerror = () => reject(new Error('Failed to load OCR engine. Check your connection.'));
+    document.head.appendChild(s);
+  });
+}
+
+async function _getTesseractWorker() {
+  if (_tesseractWorker) return _tesseractWorker;
+  await _loadTesseractScript();
+  // Tesseract.js v5: createWorker(lang, oem, options)
+  _tesseractWorker = await Tesseract.createWorker('eng', 1, {
+    workerPath:  'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+    langPath:    'https://tessdata.projectnaptha.com/4.0.0',
+    corePath:    'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core-simd-lstm.wasm.js',
+    logger:      () => {},  // silence progress logs
+  });
+  return _tesseractWorker;
 }
 
 async function ocrFile(fileId) {
   const file = files.find(f => f.id == fileId);
   if (!file) return;
 
-  // Require at least one vision-capable key
-  if (!apiKeys.openai && !apiKeys.gemini) {
-    showToast('Add an OpenAI or Gemini key in Settings → AI Keys', 'error');
-    switchTab('settings'); return;
-  }
-
   const btn = document.getElementById(`ocr-btn-${fileId}`);
   if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  showToast('Running local OCR…');
 
   try {
-    // file.content is the data URI stored at upload time
-    const dataUri = file.content;
-    if (!dataUri || !dataUri.startsWith('data:')) throw new Error('Image data missing — re-upload the file');
-
-    // Extract base64 payload and MIME type
-    const [meta, b64] = dataUri.split(',');
-    const mimeMatch = meta.match(/data:([^;]+);/);
-    const mimeType  = mimeMatch ? mimeMatch[1] : 'image/png';
-
-    let text = '';
-
-    if (apiKeys.openai) {
-      // GPT-4o vision
-      const res = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKeys.openai}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o',
-          max_tokens: 4096,
-          messages: [{
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: 'Extract ALL text visible in this image exactly as it appears. Preserve formatting, line breaks, and code structure. Output only the extracted text with no commentary.',
-              },
-              {
-                type: 'image_url',
-                image_url: { url: dataUri, detail: 'high' },
-              },
-            ],
-          }],
-        }),
-      });
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || `OpenAI error ${res.status}`); }
-      const data = await res.json();
-      text = data.choices?.[0]?.message?.content?.trim() || '';
-
-    } else if (apiKeys.gemini) {
-      // Gemini Flash vision
-      const res = await fetch(
-        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKeys.gemini}`,
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            contents: [{
-              parts: [
-                { text: 'Extract ALL text visible in this image exactly as it appears. Preserve formatting, line breaks, and code structure. Output only the extracted text with no commentary.' },
-                { inline_data: { mime_type: mimeType, data: b64 } },
-              ],
-            }],
-            generationConfig: { maxOutputTokens: 4096 },
-          }),
-        }
-      );
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || `Gemini error ${res.status}`); }
-      const data = await res.json();
-      text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    if (!file.content || !file.content.startsWith('data:')) {
+      throw new Error('Image data missing — please re-upload the file');
     }
 
+    const worker = await _getTesseractWorker();
+    const result = await worker.recognize(file.content);
+    const text   = result.data.text?.trim();
+
     if (!text) throw new Error('No text found in image');
+
+    // Store OCR text on the file object so Analyze can reuse it
+    file.ocrText = text;
+    saveFiles();
+    renderFiles(); // re-render so 🧠 Analyze button appears
+
+    // Also drop raw text straight into the queue
     addToQueue(text, 'ocr', file.name);
     switchTab('queue');
-    showToast(`✓ OCR complete — text added to queue`);
+    showToast('✓ OCR complete — text added to queue');
   } catch (e) {
     showToast(e.message || 'OCR failed', 'error');
   } finally {
     if (btn) { btn.textContent = '🔍'; btn.disabled = false; }
+  }
+}
+
+// ─── OCR Phase 2: Analyze OCR text with cheap LLM (Groq or DeepSeek) ─────────
+// Uses OpenAI-compatible chat completions — no vision needed, just text.
+// Priority: Groq (fastest, free tier) → DeepSeek (cheap) → any other keyed provider.
+// OpenAI is NOT used here — save that for Whisper transcription.
+
+const ANALYZE_PROVIDERS = [
+  {
+    id:      'groq',
+    name:    'Groq',
+    url:     'https://api.groq.com/openai/v1/chat/completions',
+    model:   'llama3-8b-8192',
+    getKey:  () => apiKeys.groq,
+  },
+  {
+    id:      'deepseek',
+    name:    'DeepSeek',
+    url:     'https://api.deepseek.com/chat/completions',
+    model:   'deepseek-chat',
+    getKey:  () => apiKeys.deepseek,
+  },
+  {
+    id:      'mistral',
+    name:    'Mistral',
+    url:     'https://api.mistral.ai/v1/chat/completions',
+    model:   'mistral-small-latest',
+    getKey:  () => apiKeys.mistral,
+  },
+  {
+    id:      'cerebras',
+    name:    'Cerebras',
+    url:     'https://api.cerebras.ai/v1/chat/completions',
+    model:   'llama3.1-8b',
+    getKey:  () => apiKeys.cerebras,
+  },
+];
+
+function _getAnalyzeProvider() {
+  return ANALYZE_PROVIDERS.find(p => p.getKey());
+}
+
+async function analyzeOcrText(fileId) {
+  const file = files.find(f => f.id == fileId);
+  if (!file) return;
+
+  if (!file.ocrText) {
+    showToast('Run 🔍 OCR first to extract text', 'error');
+    return;
+  }
+
+  const provider = _getAnalyzeProvider();
+  if (!provider) {
+    showToast('Add a Groq, DeepSeek, Mistral, or Cerebras key in Settings → AI Keys', 'error');
+    switchTab('settings');
+    return;
+  }
+
+  const btn = document.getElementById(`analyze-btn-${fileId}`);
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  showToast(`Analyzing with ${provider.name}…`);
+
+  try {
+    const res = await fetch(provider.url, {
+      method:  'POST',
+      headers: {
+        'Authorization': `Bearer ${provider.getKey()}`,
+        'Content-Type':  'application/json',
+      },
+      body: JSON.stringify({
+        model: provider.model,
+        messages: [
+          {
+            role:    'system',
+            content: 'You are a helpful assistant. The user will give you raw OCR text extracted from a screenshot. Clean it up, fix any obvious OCR errors, and return the corrected, well-formatted text. Output only the cleaned text — no commentary, no preamble.',
+          },
+          {
+            role:    'user',
+            content: `Here is the raw OCR text from a screenshot called "${file.name}":\n\n${file.ocrText}`,
+          },
+        ],
+        max_tokens:   2048,
+        temperature:  0.2,
+      }),
+    });
+
+    if (!res.ok) {
+      const e = await res.json().catch(() => ({}));
+      throw new Error(e.error?.message || `${provider.name} error ${res.status}`);
+    }
+
+    const data = await res.json();
+    const text = data.choices?.[0]?.message?.content?.trim();
+    if (!text) throw new Error('Empty response from LLM');
+
+    addToQueue(text, `ocr+${provider.name.toLowerCase()}`, file.name);
+    switchTab('queue');
+    showToast(`✓ Analyzed with ${provider.name} — added to queue`);
+  } catch (e) {
+    showToast(e.message || 'Analysis failed', 'error');
+  } finally {
+    if (btn) { btn.textContent = '🧠'; btn.disabled = false; }
   }
 }
 
@@ -578,7 +659,7 @@ async function handleFileUpload(event) {
   for (const file of uploaded) {
     try {
       const content = await readFileContent(file);
-      files.push({ id: Date.now() + Math.random(), name: file.name, type: file.type || 'text/plain', size: file.size, content, added: new Date().toISOString() });
+      files.push({ id: Date.now() + Math.random(), name: file.name, type: file.type || 'text/plain', size: file.size, content, ocrText: null, added: new Date().toISOString() });
       added++;
     } catch { showToast(`Could not read ${file.name}`, 'error'); }
   }
@@ -588,7 +669,7 @@ async function handleFileUpload(event) {
 function readFileContent(file) {
   return new Promise((resolve, reject) => {
     if (file.name.endsWith('.pdf')) { resolve(`[PDF: ${file.name} — ${formatBytes(file.size)}]`); return; }
-    // Images: store as base64 data URI so OCR can use them later
+    // Images: store as base64 data URI so local OCR can use them
     if (isImageFile(file)) {
       const reader = new FileReader();
       reader.onload  = e => resolve(e.target.result);  // data:image/png;base64,...
@@ -596,7 +677,7 @@ function readFileContent(file) {
       reader.readAsDataURL(file);
       return;
     }
-    // Everything else: read as UTF-8 text
+    // Everything else: UTF-8 text
     const reader = new FileReader();
     reader.onload  = e => resolve(e.target.result);
     reader.onerror = () => reject(new Error('Read failed'));
@@ -612,17 +693,21 @@ function renderFiles() {
   empty.style.display = 'none'; list.innerHTML = ''; list.appendChild(empty);
   files.forEach(file => {
     const isImg = IMAGE_TYPES.includes(file.type) || IMAGE_EXTS.includes(file.name.split('.').pop().toLowerCase());
+    const hasOcr = isImg && !!file.ocrText;
+    const analyzeProvider = _getAnalyzeProvider();
     const row = document.createElement('div'); row.className = 'file-row';
     row.innerHTML = `
       <div class="file-row-info" onclick="openFileViewer(${JSON.stringify(file.id)})">
         <span class="file-icon">${fileIcon(file.name)}</span>
         <div class="file-meta">
           <div class="file-name">${escapeHtml(file.name)}</div>
-          <div class="file-size">${formatBytes(file.size || 0)} · ${formatTime(file.added)}</div>
+          <div class="file-size">${formatBytes(file.size || 0)} · ${formatTime(file.added)}${hasOcr ? ' · <span style="color:var(--color-success,#437a22)">OCR✓</span>' : ''}</div>
         </div>
       </div>
       <div class="file-row-actions">
-        ${isImg ? `<button class="card-btn card-btn--transcribe" id="ocr-btn-${file.id}" onclick="ocrFile(${JSON.stringify(file.id)})" title="Extract text via OCR">🔍</button>` : ''}
+        ${isImg ? `<button class="card-btn card-btn--transcribe" id="ocr-btn-${file.id}" onclick="ocrFile(${JSON.stringify(file.id)})" title="Extract text locally (free, no API key)">🔍</button>` : ''}
+        ${hasOcr && analyzeProvider ? `<button class="card-btn card-btn--transcribe" id="analyze-btn-${file.id}" onclick="analyzeOcrText(${JSON.stringify(file.id)})" title="Analyze OCR text with ${analyzeProvider.name} (cheap LLM)">🧠</button>` : ''}
+        ${hasOcr && !analyzeProvider ? `<button class="card-btn" style="opacity:0.4;cursor:default" title="Add a Groq, DeepSeek, Mistral, or Cerebras key to enable analysis">🧠</button>` : ''}
         <button class="card-btn card-btn--delete" onclick="removeFile(${JSON.stringify(file.id)})">✕</button>
       </div>`;
     list.appendChild(row);
@@ -636,10 +721,11 @@ function openFileViewer(id) {
   document.getElementById('file-viewer').style.display     = 'flex';
   document.getElementById('viewer-filename').textContent   = file.name;
   const content = document.getElementById('viewer-content');
-  // For images, show a preview instead of raw base64
   const isImg = IMAGE_TYPES.includes(file.type) || IMAGE_EXTS.includes(file.name.split('.').pop().toLowerCase());
   if (isImg && file.content && file.content.startsWith('data:')) {
-    content.innerHTML = `<img src="${file.content}" alt="${escapeHtml(file.name)}" style="max-width:100%;border-radius:8px;" />`;
+    // Show image preview; if OCR text is available show it below the image
+    content.innerHTML = `<img src="${file.content}" alt="${escapeHtml(file.name)}" style="max-width:100%;border-radius:8px;" />`
+      + (file.ocrText ? `<pre style="margin-top:1rem;white-space:pre-wrap;font-size:0.85rem;opacity:0.8">${escapeHtml(file.ocrText)}</pre>` : '');
   } else {
     content.textContent = file.content;
   }
