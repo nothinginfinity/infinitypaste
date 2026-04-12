@@ -36,6 +36,10 @@
         <span class="tab-icon">📁</span>
         Files
       </button>
+      <button class="tab" id="tab-record" onclick="switchTab('record')">
+        <span class="tab-icon">🎙️</span>
+        Record
+      </button>
       <button class="tab" id="tab-queue" onclick="switchTab('queue')">
         <span class="tab-icon">📋</span>
         Queue
@@ -79,8 +83,6 @@
 
     <!-- Files Tab -->
     <section class="tab-content" id="view-files">
-
-      <!-- File List View -->
       <div id="files-list-view">
         <div class="files-toolbar">
           <span class="section-title">My Files</span>
@@ -88,16 +90,11 @@
             + Upload Files
           </button>
         </div>
-
-        <!-- Visible upload zone — tappable area as fallback -->
         <div class="upload-zone" onclick="triggerUpload()">
           <div class="upload-zone-icon">📂</div>
           <div class="upload-zone-text">Tap to upload files</div>
           <div class="upload-zone-hint">Text, code, markdown, JSON, PDF — any file type</div>
         </div>
-
-        <!-- Hidden input lives at body level via JS — see app.js -->
-
         <div id="files-list" class="files-list">
           <div class="queue-empty" id="files-empty" style="display:none">
             <div class="empty-icon">📁</div>
@@ -106,8 +103,6 @@
           </div>
         </div>
       </div>
-
-      <!-- File Viewer (hidden until file opened) -->
       <div id="file-viewer" class="file-viewer" style="display:none">
         <div class="viewer-header">
           <button class="viewer-back" onclick="closeFileViewer()">‹ Files</button>
@@ -115,11 +110,38 @@
           <button id="add-selection-btn" class="btn btn-accent btn-sm" onclick="addSelectionToQueue()">+ Add Selection</button>
         </div>
         <div class="viewer-hint">Select any text below, then tap <strong>+ Add Selection</strong></div>
-        <div
-          id="viewer-content"
-          class="viewer-content"
-          contenteditable="false"
-        ></div>
+        <div id="viewer-content" class="viewer-content" contenteditable="false"></div>
+      </div>
+    </section>
+
+    <!-- Record Tab -->
+    <section class="tab-content" id="view-record">
+
+      <!-- Recorder UI -->
+      <div class="record-hero">
+        <div class="record-timer" id="record-timer">0:00</div>
+        <div class="record-waveform" id="record-waveform">
+          <span></span><span></span><span></span><span></span><span></span>
+          <span></span><span></span><span></span><span></span><span></span>
+          <span></span><span></span><span></span><span></span><span></span>
+        </div>
+        <button class="record-btn" id="record-btn" onclick="toggleRecording()">
+          <span class="record-btn-icon" id="record-btn-icon">🎙️</span>
+        </button>
+        <div class="record-status" id="record-status">Tap to record</div>
+      </div>
+
+      <!-- Recordings List -->
+      <div class="recordings-toolbar">
+        <span class="section-title">Recordings</span>
+        <button class="btn btn-danger btn-sm" onclick="clearAllRecordings()">Clear All</button>
+      </div>
+      <div id="recordings-list" class="recordings-list">
+        <div class="queue-empty" id="recordings-empty">
+          <div class="empty-icon">🎙️</div>
+          <p>No recordings yet.</p>
+          <p class="empty-hint">Tap the mic button above to start.</p>
+        </div>
       </div>
 
     </section>
@@ -165,6 +187,7 @@
     <!-- Settings Tab -->
     <section class="tab-content" id="view-settings">
       <div class="settings-list">
+
         <div class="settings-section-title">Queue</div>
         <div class="settings-row">
           <span>Auto-clear after Copy All</span>
@@ -189,6 +212,31 @@
           </select>
         </div>
 
+        <!-- AI Keys -->
+        <div class="settings-section-title">AI Keys</div>
+        <div class="settings-ai-info">
+          Your keys are stored only on this device and sent directly to OpenAI. InfinityPaste never sees them.
+        </div>
+
+        <div class="settings-key-row">
+          <label class="settings-key-label">OpenAI API Key</label>
+          <div class="settings-key-label" style="font-size:11px;color:var(--muted);margin-bottom:6px;">Used for Whisper transcription &amp; GPT-4o mini summarization</div>
+          <div class="key-input-wrap">
+            <input
+              type="password"
+              id="setting-openai-key"
+              class="key-input"
+              placeholder="sk-..."
+              autocomplete="off"
+              spellcheck="false"
+              oninput="saveApiKey('openai', this.value)"
+            />
+            <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-openai-key', this)" aria-label="Show/hide key">👁️</button>
+          </div>
+          <div class="key-status" id="openai-key-status"></div>
+        </div>
+
+        <!-- Storage -->
         <div class="settings-section-title">Storage</div>
         <div class="settings-row">
           <span>Items in queue</span>
@@ -197,6 +245,10 @@
         <div class="settings-row">
           <span>Files loaded</span>
           <span id="stat-files" class="settings-value">0</span>
+        </div>
+        <div class="settings-row">
+          <span>Recordings saved</span>
+          <span id="stat-recordings" class="settings-value">0</span>
         </div>
         <div class="settings-row">
           <span>Storage used</span>
@@ -210,16 +262,21 @@
           <span>Clear all uploaded files</span>
           <span class="settings-arrow">›</span>
         </div>
+        <div class="settings-row danger" onclick="clearAllRecordings()">
+          <span>Clear all recordings</span>
+          <span class="settings-arrow">›</span>
+        </div>
 
         <div class="settings-section-title">About</div>
         <div class="settings-row">
           <span>Version</span>
-          <span class="settings-value">2.0.0</span>
+          <span class="settings-value">3.0.0</span>
         </div>
-        <div class="settings-row" onclick="window.open('https://github.com/nothinginfinity/infinitypaste')">
+        <div class="settings-row" onclick="window.open('https://github.com/nothinginfinity/infinitypaste', '_blank', 'noopener')">
           <span>GitHub</span>
           <span class="settings-arrow">›</span>
         </div>
+
       </div>
     </section>
 
