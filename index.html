@@ -32,9 +32,17 @@
         <span class="tab-icon">＋</span>
         Collect
       </button>
+      <button class="tab" id="tab-files" onclick="switchTab('files')">
+        <span class="tab-icon">📁</span>
+        Files
+      </button>
       <button class="tab" id="tab-queue" onclick="switchTab('queue')">
         <span class="tab-icon">📋</span>
         Queue
+      </button>
+      <button class="tab" id="tab-compose" onclick="switchTab('compose')">
+        <span class="tab-icon">✏️</span>
+        Compose
       </button>
       <button class="tab" id="tab-settings" onclick="switchTab('settings')">
         <span class="tab-icon">⚙️</span>
@@ -69,11 +77,58 @@
       </div>
     </section>
 
+    <!-- Files Tab -->
+    <section class="tab-content" id="view-files">
+
+      <!-- File List View -->
+      <div id="files-list-view">
+        <div class="files-toolbar">
+          <span class="section-title">My Files</span>
+          <label class="btn btn-primary btn-sm" for="file-upload-input">
+            + Upload
+          </label>
+          <input
+            id="file-upload-input"
+            type="file"
+            multiple
+            accept="*/*"
+            style="display:none"
+            onchange="handleFileUpload(event)"
+          />
+        </div>
+        <div id="files-list" class="files-list">
+          <div class="queue-empty" id="files-empty">
+            <div class="empty-icon">📁</div>
+            <p>No files yet.</p>
+            <p class="empty-hint">Tap + Upload to add files from your iPhone.</p>
+            <p class="empty-hint">Supports text, code, markdown, PDF, and more.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- File Viewer (hidden until file opened) -->
+      <div id="file-viewer" class="file-viewer" style="display:none">
+        <div class="viewer-header">
+          <button class="viewer-back" onclick="closeFileViewer()">‹ Files</button>
+          <span class="viewer-filename" id="viewer-filename"></span>
+          <button class="btn btn-accent btn-sm" onclick="addSelectionToQueue()">+ Add Selection</button>
+        </div>
+        <div class="viewer-hint" id="viewer-hint">Select any text below, then tap <strong>+ Add Selection</strong></div>
+        <div
+          id="viewer-content"
+          class="viewer-content"
+          contenteditable="false"
+        ></div>
+      </div>
+
+    </section>
+
     <!-- Queue Tab -->
     <section class="tab-content" id="view-queue">
       <div class="queue-toolbar">
         <span class="queue-count" id="queue-count-label">0 items</span>
         <div class="queue-actions">
+          <button class="btn btn-accent btn-sm" onclick="dumpToCompose()">→ Compose</button>
           <button class="btn btn-accent btn-sm" onclick="copyAll()">Copy All</button>
           <button class="btn btn-danger btn-sm" onclick="clearQueue()">Clear</button>
         </div>
@@ -82,9 +137,28 @@
         <div class="queue-empty" id="queue-empty">
           <div class="empty-icon">∞</div>
           <p>Your queue is empty.</p>
-          <p class="empty-hint">Go to Collect to add items.</p>
+          <p class="empty-hint">Collect tab or select text in Files to add items.</p>
         </div>
       </div>
+    </section>
+
+    <!-- Compose Tab -->
+    <section class="tab-content" id="view-compose">
+      <div class="compose-toolbar">
+        <span class="section-title">Compose</span>
+        <div class="compose-actions">
+          <button class="btn btn-accent btn-sm" onclick="dumpToCompose()">⬇ Dump Queue</button>
+          <button class="btn btn-primary btn-sm" onclick="copyCompose()">Copy All</button>
+          <button class="btn btn-secondary btn-sm" onclick="shareCompose()">Share</button>
+          <button class="btn btn-danger btn-sm" onclick="clearCompose()">Clear</button>
+        </div>
+      </div>
+      <textarea
+        id="compose-area"
+        class="compose-textarea"
+        placeholder="Your assembled document appears here. Tap '⬇ Dump Queue' to pull in all queued items, or type/paste freely…"
+      ></textarea>
+      <div class="compose-stats" id="compose-stats">0 chars · 0 words</div>
     </section>
 
     <!-- Settings Tab -->
@@ -111,7 +185,6 @@
             <option value="\n\n---\n\n">--- (horizontal rule)</option>
             <option value="\n\n">Double newline</option>
             <option value="\n\n===\n\n">=== (equals)</option>
-            <option value="\n\n">None</option>
           </select>
         </div>
 
@@ -121,18 +194,26 @@
           <span id="stat-count" class="settings-value">0</span>
         </div>
         <div class="settings-row">
+          <span>Files loaded</span>
+          <span id="stat-files" class="settings-value">0</span>
+        </div>
+        <div class="settings-row">
           <span>Storage used</span>
           <span id="stat-storage" class="settings-value">0 KB</span>
         </div>
-        <div class="settings-row danger" onclick="clearQueue()">
+        <div class="settings-row danger" onclick="clearQueue(true)">
           <span>Clear all queue items</span>
+          <span class="settings-arrow">›</span>
+        </div>
+        <div class="settings-row danger" onclick="clearAllFiles()">
+          <span>Clear all uploaded files</span>
           <span class="settings-arrow">›</span>
         </div>
 
         <div class="settings-section-title">About</div>
         <div class="settings-row">
           <span>Version</span>
-          <span class="settings-value">1.0.0</span>
+          <span class="settings-value">2.0.0</span>
         </div>
         <div class="settings-row" onclick="window.open('https://github.com/nothinginfinity/infinitypaste')">
           <span>GitHub</span>
@@ -143,7 +224,6 @@
 
   </div>
 
-  <!-- Toast -->
   <div id="toast" class="toast"></div>
 
   <script src="app.js"></script>

@@ -2,6 +2,7 @@
   "name": "InfinityPaste",
   "short_name": "InfinityPaste",
   "description": "Copy many. Paste once. A clipboard queue for your iPhone.",
+  "version": "2.0.0",
   "start_url": "/infinitypaste/",
   "display": "standalone",
   "background_color": "#000000",
