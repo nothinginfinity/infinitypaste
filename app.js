@@ -27,18 +27,54 @@ function init() {
   initCompose();
   initUploadInput();
   initSelectionCapture();
+  checkShareTarget(); // must be last — needs queue + tabs ready
+}
+
+// ─── Share Target + URL Import Handler ───────────────────────────
+function checkShareTarget() {
+  const params = new URLSearchParams(window.location.search);
+
+  const text     = params.get('text')   || '';
+  const title    = params.get('title')  || '';
+  const url      = params.get('url')    || '';
+  const imported = params.get('import') || ''; // bookmarklet fallback
+
+  const content = text || imported || url;
+  if (!content.trim()) return;
+
+  let label = title || '';
+  if (!label && url) {
+    try { label = new URL(url).hostname; } catch { label = 'shared'; }
+  }
+  if (!label) label = 'shared';
+
+  queue.push({
+    id:      Date.now(),
+    content: content.trim(),
+    label:   label || null,
+    source:  'share',
+    added:   new Date().toISOString(),
+  });
+
+  saveQueue();
+  renderQueue();
+  updateBadge();
+
+  // Clean the URL so a refresh doesn’t re-import
+  window.history.replaceState({}, '', '/infinitypaste/');
+
+  switchTab('queue');
+  showToast('\u2713 Added from share');
 }
 
 // ─── Selection capture (must run once after DOM ready) ────────────
 function initSelectionCapture() {
-  // On every selectionchange, snapshot the selected text
   document.addEventListener('selectionchange', () => {
     const sel = window.getSelection();
     const txt = sel ? sel.toString().trim() : '';
     if (txt) _capturedSelection = txt;
   });
 
-  // Also grab it fresh on touchstart of the button, before iOS clears it
   const btn = document.getElementById('add-selection-btn');
   if (btn) {
     btn.addEventListener('touchstart', () => {
@@ -271,7 +307,6 @@ function openFileViewer(id) {
   const file = files.find(f => f.id == id);
   if (!file) return;
 
-  // Reset captured selection when opening a new file
   _capturedSelection = '';
 
   document.getElementById('files-list-view').style.display  = 'none';
@@ -283,10 +318,8 @@ function openFileViewer(id) {
   content.dataset.fileId   = id;
   content.dataset.fileName = file.name;
 
-  // Re-attach touchstart listener to the button each time viewer opens
   const btn = document.getElementById('add-selection-btn');
   if (btn) {
-    // Clone to remove old listeners, then re-add
     const fresh = btn.cloneNode(true);
     btn.parentNode.replaceChild(fresh, btn);
     fresh.addEventListener('touchstart', () => {
@@ -304,7 +337,6 @@ function closeFileViewer() {
 }
 
 function addSelectionToQueue() {
-  // Try live selection first, fall back to what we captured on touchstart
   const sel = window.getSelection();
   const liveTxt = sel ? sel.toString().trim() : '';
   const text = liveTxt || _capturedSelection;
@@ -319,7 +351,6 @@ function addSelectionToQueue() {
 
   addToQueue(text, null, fileName);
 
-  // Clear both
   _capturedSelection = '';
   if (sel) sel.removeAllRanges();
 }

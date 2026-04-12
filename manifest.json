@@ -2,12 +2,20 @@
   "name": "InfinityPaste",
   "short_name": "InfinityPaste",
   "description": "Copy many. Paste once. A clipboard queue for your iPhone.",
-  "version": "2.0.0",
   "start_url": "/infinitypaste/",
   "display": "standalone",
   "background_color": "#000000",
   "theme_color": "#000000",
   "orientation": "portrait",
+  "share_target": {
+    "action": "/infinitypaste/",
+    "method": "GET",
+    "params": {
+      "title": "title",
+      "text": "text",
+      "url": "url"
+    }
+  },
   "icons": [
     { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" }
