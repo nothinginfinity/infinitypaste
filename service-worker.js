@@ -1,4 +1,4 @@
-const CACHE = 'infinitypaste-v5';
+const CACHE = 'infinitypaste-v6';
 const ASSETS = ['./', 'index.html', 'app.js', 'styles.css', 'manifest.json'];
 
 self.addEventListener('install', e => {

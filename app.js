@@ -1,11 +1,12 @@
-// ─── InfinityPaste v3.3.0 — app.js ──────────────────────────────────────────────
+// ─── InfinityPaste v3.4.0 — app.js ──────────────────────────────────────────────
 const STORAGE_KEY  = 'infinitypaste_queue';
 const SETTINGS_KEY = 'infinitypaste_settings';
 const FILES_KEY    = 'infinitypaste_files';
 const APIKEYS_KEY  = 'infinitypaste_apikeys';
 const IDB_NAME     = 'infinitypaste_db';
 const IDB_STORE    = 'recordings';
-const IDB_VERSION  = 1;
+const IDB_FILES_STORE = 'files';
+const IDB_VERSION  = 2;
 
 // All supported providers — id must match HTML input ids
 const PROVIDERS = [
@@ -27,12 +28,17 @@ const IMAGE_EXTS  = ['png','jpg','jpeg','gif','webp','bmp','tiff','heic','heif']
 
 // Tesseract CDN — loaded on demand, worker reused across calls
 const TESSERACT_CDN = 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
-let _tesseractWorker = null;   // reused worker instance
-let _tesseractLoaded = false;  // script tag injected flag
+let _tesseractWorker = null;
+let _tesseractLoaded = false;
+
+// PDF.js CDN — loaded on demand
+const PDFJS_CDN = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.min.mjs';
+let _pdfjsLib = null;
+let _pdfjsLoaded = false;
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let queue    = [];
-let files    = [];
+let files    = [];   // metadata only — blobs/content live in IDB for images/PDFs
 let apiKeys  = {};
 let settings = { autoclear: false, shownumbers: true, separator: '\n\n---\n\n' };
 
@@ -74,11 +80,15 @@ function initIDB() {
       const db = e.target.result;
       if (!db.objectStoreNames.contains(IDB_STORE))
         db.createObjectStore(IDB_STORE, { keyPath: 'id' });
+      // v2: add files object store for image/PDF blobs
+      if (!db.objectStoreNames.contains(IDB_FILES_STORE))
+        db.createObjectStore(IDB_FILES_STORE, { keyPath: 'id' });
     };
     req.onsuccess = e => { idbDb = e.target.result; resolve(); };
     req.onerror   = () => reject(req.error);
   });
 }
+
 function idbPut(record) {
   return new Promise((resolve, reject) => {
     const tx = idbDb.transaction(IDB_STORE, 'readwrite');
@@ -117,6 +127,37 @@ function idbGetAllMeta() {
       mimeType: r.mimeType, size: r.size, added: r.added
     })));
     req.onerror = () => reject(req.error);
+  });
+}
+
+// ─── IDB Files Store (images + PDFs) ─────────────────────────────────────────
+function idbFilePut(record) {
+  return new Promise((resolve, reject) => {
+    const tx = idbDb.transaction(IDB_FILES_STORE, 'readwrite');
+    tx.objectStore(IDB_FILES_STORE).put(record).onsuccess = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+function idbFileGet(id) {
+  return new Promise((resolve, reject) => {
+    const tx  = idbDb.transaction(IDB_FILES_STORE, 'readonly');
+    const req = tx.objectStore(IDB_FILES_STORE).get(id);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror   = () => reject(req.error);
+  });
+}
+function idbFileDelete(id) {
+  return new Promise((resolve, reject) => {
+    const tx = idbDb.transaction(IDB_FILES_STORE, 'readwrite');
+    tx.objectStore(IDB_FILES_STORE).delete(id).onsuccess = resolve;
+    tx.onerror = () => reject(tx.error);
+  });
+}
+function idbFileClear() {
+  return new Promise((resolve, reject) => {
+    const tx = idbDb.transaction(IDB_FILES_STORE, 'readwrite');
+    tx.objectStore(IDB_FILES_STORE).clear().onsuccess = resolve;
+    tx.onerror = () => reject(tx.error);
   });
 }
 
@@ -246,7 +287,7 @@ async function playRecording(id) {
   currentAudioEl = audioEl; currentPlayId = id;
 }
 
-// ─── Delete / Clear ───────────────────────────────────────────────────────────
+// ─── Delete / Clear recordings ────────────────────────────────────────────────
 async function deleteRecording(id) {
   await idbDelete(id);
   recordings = recordings.filter(r => r.id !== id);
@@ -258,7 +299,7 @@ async function clearAllRecordings() {
   renderRecordings(); updateStats(); showToast('All recordings cleared');
 }
 
-// ─── Transcribe (Whisper — OpenAI only, audio requires it) ───────────────────
+// ─── Transcribe (Whisper) ─────────────────────────────────────────────────────
 async function transcribeRecording(id) {
   if (!apiKeys.openai) {
     showToast('Add your OpenAI key in Settings → AI Keys', 'error');
@@ -291,13 +332,46 @@ async function transcribeRecording(id) {
   }
 }
 
-// ─── OCR Phase 1: Free local Tesseract.js ─────────────────────────────────────
-// No API key needed. Runs entirely in the browser via WebAssembly.
-// Loads the Tesseract script once on demand; reuses the same worker for speed.
+// ─── PDF.js — lazy load ───────────────────────────────────────────────────────
+async function _getPdfJs() {
+  if (_pdfjsLib) return _pdfjsLib;
+  if (!_pdfjsLoaded) {
+    // Use dynamic import for the ES module build
+    try {
+      const mod = await import(PDFJS_CDN);
+      _pdfjsLib = mod;
+      // Point worker to CDN so it doesn't try to load locally
+      _pdfjsLib.GlobalWorkerOptions.workerSrc =
+        'https://cdn.jsdelivr.net/npm/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs';
+      _pdfjsLoaded = true;
+    } catch(e) {
+      throw new Error('Failed to load PDF engine. Check your connection.');
+    }
+  }
+  return _pdfjsLib;
+}
 
+async function extractPdfText(blob) {
+  const pdfjsLib = await _getPdfJs();
+  const arrayBuffer = await blob.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pageTexts = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page    = await pdf.getPage(i);
+    const content = await page.getTextContent();
+    const str     = content.items.map(item => item.str).join(' ').trim();
+    if (str) pageTexts.push(`--- Page ${i} ---\n${str}`);
+  }
+  return pageTexts.join('\n\n');
+}
+
+// ─── OCR Phase 1: Free local Tesseract.js ─────────────────────────────────────
 function isImageFile(file) {
   const ext = file.name.split('.').pop().toLowerCase();
   return IMAGE_TYPES.includes(file.type) || IMAGE_EXTS.includes(ext);
+}
+function isPdfFile(file) {
+  return file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
 }
 
 function _loadTesseractScript() {
@@ -314,12 +388,11 @@ function _loadTesseractScript() {
 async function _getTesseractWorker() {
   if (_tesseractWorker) return _tesseractWorker;
   await _loadTesseractScript();
-  // Tesseract.js v5: createWorker(lang, oem, options)
   _tesseractWorker = await Tesseract.createWorker('eng', 1, {
     workerPath:  'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
     langPath:    'https://tessdata.projectnaptha.com/4.0.0',
     corePath:    'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core-simd-lstm.wasm.js',
-    logger:      () => {},  // silence progress logs
+    logger:      () => {},
   });
   return _tesseractWorker;
 }
@@ -333,22 +406,22 @@ async function ocrFile(fileId) {
   showToast('Running local OCR…');
 
   try {
-    if (!file.content || !file.content.startsWith('data:')) {
-      throw new Error('Image data missing — please re-upload the file');
-    }
+    // Retrieve blob from IDB
+    const stored = await idbFileGet(fileId);
+    if (!stored?.blob) throw new Error('Image data missing — please re-upload the file');
 
+    const objectUrl = URL.createObjectURL(stored.blob);
     const worker = await _getTesseractWorker();
-    const result = await worker.recognize(file.content);
-    const text   = result.data.text?.trim();
+    const result = await worker.recognize(objectUrl);
+    URL.revokeObjectURL(objectUrl);
 
+    const text = result.data.text?.trim();
     if (!text) throw new Error('No text found in image');
 
-    // Store OCR text on the file object so Analyze can reuse it
     file.ocrText = text;
     saveFiles();
-    renderFiles(); // re-render so 🧠 Analyze button appears
+    renderFiles();
 
-    // Also drop raw text straight into the queue
     addToQueue(text, 'ocr', file.name);
     switchTab('queue');
     showToast('✓ OCR complete — text added to queue');
@@ -359,40 +432,12 @@ async function ocrFile(fileId) {
   }
 }
 
-// ─── OCR Phase 2: Analyze OCR text with cheap LLM (Groq or DeepSeek) ─────────
-// Uses OpenAI-compatible chat completions — no vision needed, just text.
-// Priority: Groq (fastest, free tier) → DeepSeek (cheap) → Mistral → Cerebras
-// OpenAI is NOT used here — save that for Whisper transcription.
-
+// ─── OCR Phase 2: Analyze OCR text with LLM ──────────────────────────────────
 const ANALYZE_PROVIDERS = [
-  {
-    id:      'groq',
-    name:    'Groq',
-    url:     'https://api.groq.com/openai/v1/chat/completions',
-    model:   'llama-3.1-8b-instant',  // fast, free-tier friendly
-    getKey:  () => apiKeys.groq,
-  },
-  {
-    id:      'deepseek',
-    name:    'DeepSeek',
-    url:     'https://api.deepseek.com/chat/completions',
-    model:   'deepseek-chat',
-    getKey:  () => apiKeys.deepseek,
-  },
-  {
-    id:      'mistral',
-    name:    'Mistral',
-    url:     'https://api.mistral.ai/v1/chat/completions',
-    model:   'mistral-small-latest',
-    getKey:  () => apiKeys.mistral,
-  },
-  {
-    id:      'cerebras',
-    name:    'Cerebras',
-    url:     'https://api.cerebras.ai/v1/chat/completions',
-    model:   'llama3.1-8b',
-    getKey:  () => apiKeys.cerebras,
-  },
+  { id: 'groq',      name: 'Groq',      url: 'https://api.groq.com/openai/v1/chat/completions',    model: 'llama-3.1-8b-instant', getKey: () => apiKeys.groq },
+  { id: 'deepseek',  name: 'DeepSeek',  url: 'https://api.deepseek.com/chat/completions',           model: 'deepseek-chat',        getKey: () => apiKeys.deepseek },
+  { id: 'mistral',   name: 'Mistral',   url: 'https://api.mistral.ai/v1/chat/completions',          model: 'mistral-small-latest', getKey: () => apiKeys.mistral },
+  { id: 'cerebras',  name: 'Cerebras', url: 'https://api.cerebras.ai/v1/chat/completions',          model: 'llama3.1-8b',          getKey: () => apiKeys.cerebras },
 ];
 
 function _getAnalyzeProvider() {
@@ -402,56 +447,29 @@ function _getAnalyzeProvider() {
 async function analyzeOcrText(fileId) {
   const file = files.find(f => f.id == fileId);
   if (!file) return;
-
-  if (!file.ocrText) {
-    showToast('Run 🔍 OCR first to extract text', 'error');
-    return;
-  }
-
+  if (!file.ocrText) { showToast('Run 🔍 OCR first to extract text', 'error'); return; }
   const provider = _getAnalyzeProvider();
-  if (!provider) {
-    showToast('Add a Groq, DeepSeek, Mistral, or Cerebras key in Settings → AI Keys', 'error');
-    switchTab('settings');
-    return;
-  }
-
+  if (!provider) { showToast('Add a Groq, DeepSeek, Mistral, or Cerebras key in Settings → AI Keys', 'error'); switchTab('settings'); return; }
   const btn = document.getElementById(`analyze-btn-${fileId}`);
   if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
   showToast(`Analyzing with ${provider.name}…`);
-
   try {
     const res = await fetch(provider.url, {
-      method:  'POST',
-      headers: {
-        'Authorization': `Bearer ${provider.getKey()}`,
-        'Content-Type':  'application/json',
-      },
+      method: 'POST',
+      headers: { 'Authorization': `Bearer ${provider.getKey()}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: provider.model,
         messages: [
-          {
-            role:    'system',
-            content: 'You are a helpful assistant. The user will give you raw OCR text extracted from a screenshot. Clean it up, fix any obvious OCR errors, and return the corrected, well-formatted text. Output only the cleaned text — no commentary, no preamble.',
-          },
-          {
-            role:    'user',
-            content: `Here is the raw OCR text from a screenshot called "${file.name}":\n\n${file.ocrText}`,
-          },
+          { role: 'system', content: 'You are a helpful assistant. The user will give you raw OCR text extracted from a screenshot. Clean it up, fix any obvious OCR errors, and return the corrected, well-formatted text. Output only the cleaned text — no commentary, no preamble.' },
+          { role: 'user', content: `Here is the raw OCR text from a screenshot called "${file.name}":\n\n${file.ocrText}` },
         ],
-        max_tokens:   2048,
-        temperature:  0.2,
+        max_tokens: 2048, temperature: 0.2,
       }),
     });
-
-    if (!res.ok) {
-      const e = await res.json().catch(() => ({}));
-      throw new Error(e.error?.message || `${provider.name} error ${res.status}`);
-    }
-
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || `${provider.name} error ${res.status}`); }
     const data = await res.json();
     const text = data.choices?.[0]?.message?.content?.trim();
     if (!text) throw new Error('Empty response from LLM');
-
     addToQueue(text, `ocr+${provider.name.toLowerCase()}`, file.name);
     switchTab('queue');
     showToast(`✓ Analyzed with ${provider.name} — added to queue`);
@@ -469,25 +487,18 @@ function loadApiKeys() {
     if (saved) apiKeys = { ...apiKeys, ...saved };
   } catch {}
 }
-
 function saveApiKey(name, value) {
   apiKeys[name] = value.trim();
   localStorage.setItem(APIKEYS_KEY, JSON.stringify(apiKeys));
-  updateKeyStatus(name);
-  updateKeyDot(name);
+  updateKeyStatus(name); updateKeyDot(name);
 }
-
 function applyApiKeyUI() {
   PROVIDERS.forEach(p => {
     const input = document.getElementById(`setting-${p.id}-key`);
-    if (input && apiKeys[p.id]) {
-      input.value = apiKeys[p.id];
-    }
-    updateKeyStatus(p.id);
-    updateKeyDot(p.id);
+    if (input && apiKeys[p.id]) input.value = apiKeys[p.id];
+    updateKeyStatus(p.id); updateKeyDot(p.id);
   });
 }
-
 function updateKeyStatus(name) {
   const el  = document.getElementById(`${name}-key-status`);
   const p   = PROVIDERS.find(x => x.id === name);
@@ -495,15 +506,9 @@ function updateKeyStatus(name) {
   const val = apiKeys[name] || '';
   if (!val) { el.textContent = ''; el.className = 'key-status'; return; }
   const ok = val.length >= p.minLen && (!p.prefix || val.startsWith(p.prefix));
-  if (ok) {
-    el.textContent = '✓ Key saved';
-    el.className = 'key-status key-status--ok';
-  } else {
-    el.textContent = p.prefix ? `⚠️ Should start with "${p.prefix}"` : '⚠️ Key looks too short';
-    el.className = 'key-status key-status--warn';
-  }
+  el.textContent = ok ? '✓ Key saved' : (p.prefix ? `⚠️ Should start with "${p.prefix}"` : '⚠️ Key looks too short');
+  el.className   = ok ? 'key-status key-status--ok' : 'key-status key-status--warn';
 }
-
 function updateKeyDot(name) {
   const dot = document.getElementById(`dot-${name}`);
   if (!dot) return;
@@ -512,7 +517,6 @@ function updateKeyDot(name) {
   const ok  = val.length >= (p?.minLen || 10) && (!p?.prefix || val.startsWith(p.prefix));
   dot.className = val ? (ok ? 'key-dot key-dot--ok' : 'key-dot key-dot--warn') : 'key-dot';
 }
-
 function toggleKeyCard(id) {
   const body    = document.getElementById(`body-${id}`);
   const chevron = document.getElementById(`chevron-${id}`);
@@ -525,7 +529,6 @@ function toggleKeyCard(id) {
     updateKeyStatus(id);
   }
 }
-
 function toggleKeyVisibility(inputId, btn) {
   const input = document.getElementById(inputId);
   if (!input) return;
@@ -560,10 +563,20 @@ function initSelectionCapture() {
   }, { passive: true });
 }
 
-// ─── Storage ──────────────────────────────────────────────────────────────────
+// ─── Storage (queue + settings metadata) ─────────────────────────────────────
 function loadQueue() { try { queue = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch { queue = []; } }
 function saveQueue() { localStorage.setItem(STORAGE_KEY, JSON.stringify(queue)); }
-function loadFiles() { try { files = JSON.parse(localStorage.getItem(FILES_KEY)) || []; } catch { files = []; } }
+
+// Files metadata only in localStorage — blobs live in IDB
+function loadFiles() {
+  try { files = JSON.parse(localStorage.getItem(FILES_KEY)) || []; } catch { files = []; }
+  // Strip any legacy base64 content fields to free localStorage space
+  let dirty = false;
+  files.forEach(f => {
+    if (f.content && f.content.startsWith('data:')) { delete f.content; dirty = true; }
+  });
+  if (dirty) saveFiles();
+}
 function saveFiles() {
   try { localStorage.setItem(FILES_KEY, JSON.stringify(files)); }
   catch { showToast('Storage full — remove some files', 'error'); }
@@ -652,32 +665,39 @@ function initUploadInput() {
   document.body.appendChild(input);
 }
 function triggerUpload() { const i = document.getElementById('file-upload-input'); if (i) { i.value = ''; i.click(); } }
+
 async function handleFileUpload(event) {
   const uploaded = Array.from(event.target.files || []);
   if (!uploaded.length) return;
   let added = 0;
   for (const file of uploaded) {
     try {
-      const content = await readFileContent(file);
-      files.push({ id: Date.now() + Math.random(), name: file.name, type: file.type || 'text/plain', size: file.size, content, ocrText: null, added: new Date().toISOString() });
+      const id = Date.now() + Math.random();
+      const meta = { id, name: file.name, type: file.type || 'text/plain', size: file.size, ocrText: null, added: new Date().toISOString() };
+
+      if (isImageFile(file)) {
+        // Store image blob in IDB — no base64 in localStorage
+        await idbFilePut({ id, blob: file, mimeType: file.type });
+        // Keep a small object URL preview for the viewer; regenerated on open
+        files.push(meta);
+      } else if (isPdfFile(file)) {
+        // Store PDF blob in IDB; extract text on demand
+        await idbFilePut({ id, blob: file, mimeType: 'application/pdf' });
+        files.push(meta);
+      } else {
+        // Text/code files: read as UTF-8, store inline (typically small)
+        const content = await readTextFile(file);
+        files.push({ ...meta, content });
+      }
       added++;
     } catch { showToast(`Could not read ${file.name}`, 'error'); }
   }
   saveFiles(); renderFiles(); updateStats();
   showToast(`✓ Added ${added} file${added !== 1 ? 's' : ''}`);
 }
-function readFileContent(file) {
+
+function readTextFile(file) {
   return new Promise((resolve, reject) => {
-    if (file.name.endsWith('.pdf')) { resolve(`[PDF: ${file.name} — ${formatBytes(file.size)}]`); return; }
-    // Images: store as base64 data URI so local OCR can use them
-    if (isImageFile(file)) {
-      const reader = new FileReader();
-      reader.onload  = e => resolve(e.target.result);  // data:image/png;base64,...
-      reader.onerror = () => reject(new Error('Read failed'));
-      reader.readAsDataURL(file);
-      return;
-    }
-    // Everything else: UTF-8 text
     const reader = new FileReader();
     reader.onload  = e => resolve(e.target.result);
     reader.onerror = () => reject(new Error('Read failed'));
@@ -692,7 +712,8 @@ function renderFiles() {
   if (!files.length) { empty.style.display = 'flex'; list.querySelectorAll('.file-row').forEach(el => el.remove()); return; }
   empty.style.display = 'none'; list.innerHTML = ''; list.appendChild(empty);
   files.forEach(file => {
-    const isImg = IMAGE_TYPES.includes(file.type) || IMAGE_EXTS.includes(file.name.split('.').pop().toLowerCase());
+    const isImg  = IMAGE_TYPES.includes(file.type) || IMAGE_EXTS.includes(file.name.split('.').pop().toLowerCase());
+    const isPdf  = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
     const hasOcr = isImg && !!file.ocrText;
     const analyzeProvider = _getAnalyzeProvider();
     const row = document.createElement('div'); row.className = 'file-row';
@@ -701,19 +722,43 @@ function renderFiles() {
         <span class="file-icon">${fileIcon(file.name)}</span>
         <div class="file-meta">
           <div class="file-name">${escapeHtml(file.name)}</div>
-          <div class="file-size">${formatBytes(file.size || 0)} · ${formatTime(file.added)}${hasOcr ? ' · <span style="color:var(--color-success,#437a22)">OCR✓</span>' : ''}</div>
+          <div class="file-size">${formatBytes(file.size || 0)} · ${formatTime(file.added)}${hasOcr ? ' · <span style="color:var(--success)">OCR✓</span>' : ''}</div>
         </div>
       </div>
       <div class="file-row-actions">
-        ${isImg ? `<button class="card-btn card-btn--transcribe" id="ocr-btn-${file.id}" onclick="ocrFile(${JSON.stringify(file.id)})" title="Extract text locally (free, no API key)">🔍</button>` : ''}
-        ${hasOcr && analyzeProvider ? `<button class="card-btn card-btn--transcribe" id="analyze-btn-${file.id}" onclick="analyzeOcrText(${JSON.stringify(file.id)})" title="Analyze OCR text with ${analyzeProvider.name} (cheap LLM)">🧠</button>` : ''}
-        ${hasOcr && !analyzeProvider ? `<button class="card-btn" style="opacity:0.4;cursor:default" title="Add a Groq, DeepSeek, Mistral, or Cerebras key to enable analysis">🧠</button>` : ''}
+        ${isImg ? `<button class="card-btn card-btn--transcribe" id="ocr-btn-${file.id}" onclick="ocrFile(${JSON.stringify(file.id)})" title="Extract text locally (free)">🔍</button>` : ''}
+        ${isPdf ? `<button class="card-btn card-btn--transcribe" id="pdf-btn-${file.id}" onclick="extractPdfFileText(${JSON.stringify(file.id)})" title="Extract PDF text">📄</button>` : ''}
+        ${hasOcr && analyzeProvider ? `<button class="card-btn card-btn--transcribe" id="analyze-btn-${file.id}" onclick="analyzeOcrText(${JSON.stringify(file.id)})" title="Analyze with ${analyzeProvider.name}">🧠</button>` : ''}
+        ${hasOcr && !analyzeProvider ? `<button class="card-btn" style="opacity:0.4;cursor:default" title="Add a Groq/DeepSeek/Mistral/Cerebras key to enable">🧠</button>` : ''}
         <button class="card-btn card-btn--delete" onclick="removeFile(${JSON.stringify(file.id)})">✕</button>
       </div>`;
     list.appendChild(row);
   });
 }
-function openFileViewer(id) {
+
+// ─── PDF text extraction (on-demand via PDF.js) ───────────────────────────────
+async function extractPdfFileText(fileId) {
+  const file = files.find(f => f.id == fileId);
+  if (!file) return;
+  const btn = document.getElementById(`pdf-btn-${fileId}`);
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  showToast('Extracting PDF text…');
+  try {
+    const stored = await idbFileGet(fileId);
+    if (!stored?.blob) throw new Error('PDF data missing — please re-upload the file');
+    const text = await extractPdfText(stored.blob);
+    if (!text.trim()) throw new Error('No extractable text found in this PDF');
+    addToQueue(text, 'pdf', file.name);
+    switchTab('queue');
+    showToast('✓ PDF text added to queue');
+  } catch (e) {
+    showToast(e.message || 'PDF extraction failed', 'error');
+  } finally {
+    if (btn) { btn.textContent = '📄'; btn.disabled = false; }
+  }
+}
+
+async function openFileViewer(id) {
   const file = files.find(f => f.id == id);
   if (!file) return;
   _capturedSelection = '';
@@ -721,15 +766,32 @@ function openFileViewer(id) {
   document.getElementById('file-viewer').style.display     = 'flex';
   document.getElementById('viewer-filename').textContent   = file.name;
   const content = document.getElementById('viewer-content');
+
   const isImg = IMAGE_TYPES.includes(file.type) || IMAGE_EXTS.includes(file.name.split('.').pop().toLowerCase());
-  if (isImg && file.content && file.content.startsWith('data:')) {
-    // Show image preview; if OCR text is available show it below the image
-    content.innerHTML = `<img src="${file.content}" alt="${escapeHtml(file.name)}" style="max-width:100%;border-radius:8px;" />`
-      + (file.ocrText ? `<pre style="margin-top:1rem;white-space:pre-wrap;font-size:0.85rem;opacity:0.8">${escapeHtml(file.ocrText)}</pre>` : '');
+  const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
+
+  if (isImg) {
+    // Fetch blob from IDB and create object URL for display
+    try {
+      const stored = await idbFileGet(id);
+      if (stored?.blob) {
+        const url = URL.createObjectURL(stored.blob);
+        content.innerHTML = `<img src="${url}" alt="${escapeHtml(file.name)}" style="max-width:100%;border-radius:8px;" />`
+          + (file.ocrText ? `<pre style="margin-top:1rem;white-space:pre-wrap;font-size:0.85rem;opacity:0.8">${escapeHtml(file.ocrText)}</pre>` : '');
+        // Revoke after a short delay (image has loaded)
+        setTimeout(() => URL.revokeObjectURL(url), 10000);
+      } else {
+        content.textContent = '[Image data not found — please re-upload]';
+      }
+    } catch { content.textContent = '[Could not load image]'; }
+  } else if (isPdf) {
+    content.textContent = 'Tap 📄 to extract text from this PDF.';
   } else {
-    content.textContent = file.content;
+    content.textContent = file.content || '';
   }
-  content.dataset.fileId = id; content.dataset.fileName = file.name;
+
+  content.dataset.fileId   = id;
+  content.dataset.fileName = file.name;
   const btn = document.getElementById('add-selection-btn');
   if (btn) {
     const fresh = btn.cloneNode(true); btn.parentNode.replaceChild(fresh, btn);
@@ -739,6 +801,7 @@ function openFileViewer(id) {
     }, { passive: true });
   }
 }
+
 function closeFileViewer() {
   _capturedSelection = '';
   document.getElementById('file-viewer').style.display     = 'none';
@@ -751,8 +814,16 @@ function addSelectionToQueue() {
   addToQueue(text, null, content.dataset.fileName || 'file');
   _capturedSelection = ''; window.getSelection()?.removeAllRanges();
 }
-function removeFile(id) { files = files.filter(f => f.id != id); saveFiles(); renderFiles(); updateStats(); showToast('File removed'); }
-function clearAllFiles() { files = []; saveFiles(); renderFiles(); updateStats(); closeFileViewer(); showToast('All files cleared'); }
+async function removeFile(id) {
+  // Delete blob from IDB if present
+  try { await idbFileDelete(id); } catch {}
+  files = files.filter(f => f.id != id);
+  saveFiles(); renderFiles(); updateStats(); showToast('File removed');
+}
+async function clearAllFiles() {
+  try { await idbFileClear(); } catch {}
+  files = []; saveFiles(); renderFiles(); updateStats(); closeFileViewer(); showToast('All files cleared');
+}
 
 // ─── Compose ──────────────────────────────────────────────────────────────────
 function initCompose() { document.getElementById('compose-area').addEventListener('input', updateComposeStats); }
