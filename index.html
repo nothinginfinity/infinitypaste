@@ -84,15 +84,15 @@
       <div id="files-list-view">
         <div class="files-toolbar">
           <span class="section-title">My Files</span>
-          <label class="btn btn-primary btn-sm" for="file-upload-input">
+          <button class="btn btn-primary btn-sm" onclick="document.getElementById('file-upload-input').click()">
             + Upload
-          </label>
+          </button>
           <input
             id="file-upload-input"
             type="file"
             multiple
             accept="*/*"
-            style="display:none"
+            style="position:absolute; opacity:0; width:1px; height:1px; top:-9999px;"
             onchange="handleFileUpload(event)"
           />
         </div>
