@@ -1,5 +1,5 @@
-// ─── InfinityPaste v3.5.0 — app.js ──────────────────────────────────────────────
-// Phase 2: Queue Search, Sort, Drag-Reorder, Expand/Collapse Preview
+// ─── InfinityPaste v3.6.0 — app.js ──────────────────────────────────────────────
+// Phase 3: URL Fetch, Table Extractor, Bookmarklet, AutoTitle
 const STORAGE_KEY  = 'infinitypaste_queue';
 const SETTINGS_KEY = 'infinitypaste_settings';
 const FILES_KEY    = 'infinitypaste_files';
@@ -425,163 +425,270 @@ const ANALYZE_PROVIDERS = [
   { id: 'groq',      name: 'Groq',      url: 'https://api.groq.com/openai/v1/chat/completions',    model: 'llama-3.1-8b-instant', getKey: () => apiKeys.groq },
   { id: 'deepseek',  name: 'DeepSeek',  url: 'https://api.deepseek.com/chat/completions',           model: 'deepseek-chat',        getKey: () => apiKeys.deepseek },
   { id: 'mistral',   name: 'Mistral',   url: 'https://api.mistral.ai/v1/chat/completions',          model: 'mistral-small-latest', getKey: () => apiKeys.mistral },
-  { id: 'cerebras',  name: 'Cerebras', url: 'https://api.cerebras.ai/v1/chat/completions',          model: 'llama3.1-8b',          getKey: () => apiKeys.cerebras },
+  { id: 'cerebras',  name: 'Cerebras',  url: 'https://api.cerebras.ai/v1/chat/completions',         model: 'llama3.1-8b',          getKey: () => apiKeys.cerebras },
+  { id: 'fireworks', name: 'Fireworks', url: 'https://api.fireworks.ai/inference/v1/chat/completions', model: 'accounts/fireworks/models/llama-v3p1-8b-instruct', getKey: () => apiKeys.fireworks },
+  { id: 'sambanova', name: 'SambaNova', url: 'https://api.sambanova.ai/v1/chat/completions',        model: 'Meta-Llama-3.1-8B-Instruct', getKey: () => apiKeys.sambanova },
+  { id: 'openai',    name: 'OpenAI',    url: 'https://api.openai.com/v1/chat/completions',          model: 'gpt-4o-mini',          getKey: () => apiKeys.openai },
+  { id: 'anthropic', name: 'Anthropic', url: null, getKey: () => apiKeys.anthropic },
+  { id: 'gemini',    name: 'Gemini',    url: null, getKey: () => apiKeys.gemini },
+  { id: 'xai',       name: 'xAI',       url: 'https://api.x.ai/v1/chat/completions',               model: 'grok-3-mini',          getKey: () => apiKeys.xai },
 ];
-function _getAnalyzeProvider() {
-  return ANALYZE_PROVIDERS.find(p => p.getKey());
+
+function _getBestAnalyzeProvider() {
+  return ANALYZE_PROVIDERS.find(p => p.url && p.getKey());
 }
-async function analyzeOcrText(fileId) {
+
+async function analyzeFile(fileId) {
+  const provider = _getBestAnalyzeProvider();
+  if (!provider) {
+    showToast('Add an AI key in Settings → AI Keys', 'error');
+    switchTab('settings'); return;
+  }
   const file = files.find(f => f.id == fileId);
   if (!file) return;
-  if (!file.ocrText) { showToast('Run 🔍 OCR first to extract text', 'error'); return; }
-  const provider = _getAnalyzeProvider();
-  if (!provider) { showToast('Add a Groq, DeepSeek, Mistral, or Cerebras key in Settings → AI Keys', 'error'); switchTab('settings'); return; }
   const btn = document.getElementById(`analyze-btn-${fileId}`);
   if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
   showToast(`Analyzing with ${provider.name}…`);
   try {
+    const stored = await idbFileGet(fileId);
+    if (!stored?.blob) throw new Error('File data missing');
+    let text = '';
+    if (isPdfFile({ name: file.name, type: stored.blob.type })) {
+      text = await extractPdfText(stored.blob);
+    } else if (isImageFile({ name: file.name, type: stored.blob.type })) {
+      const worker = await _getTesseractWorker();
+      const url    = URL.createObjectURL(stored.blob);
+      const result = await worker.recognize(url);
+      URL.revokeObjectURL(url);
+      text = result.data.text?.trim();
+    } else {
+      text = await stored.blob.text();
+    }
+    if (!text) throw new Error('No text content extracted from file');
+    const prompt = `Analyze the following content and provide a concise summary with key insights:\n\n${text.slice(0, 8000)}`;
     const res = await fetch(provider.url, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${provider.getKey()}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: provider.model,
-        messages: [
-          { role: 'system', content: 'You are a helpful assistant. The user will give you raw OCR text extracted from a screenshot. Clean it up, fix any obvious OCR errors, and return the corrected, well-formatted text. Output only the cleaned text — no commentary, no preamble.' },
-          { role: 'user', content: `Here is the raw OCR text from a screenshot called "${file.name}":\n\n${file.ocrText}` },
-        ],
-        max_tokens: 2048, temperature: 0.2,
-      }),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${provider.getKey()}` },
+      body: JSON.stringify({ model: provider.model, messages: [{ role: 'user', content: prompt }], max_tokens: 500 }),
     });
-    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || `${provider.name} error ${res.status}`); }
-    const data = await res.json();
-    const text = data.choices?.[0]?.message?.content?.trim();
-    if (!text) throw new Error('Empty response from LLM');
-    addToQueue(text, `ocr+${provider.name.toLowerCase()}`, file.name);
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || `API error ${res.status}`); }
+    const data   = await res.json();
+    const result2 = data.choices?.[0]?.message?.content?.trim();
+    if (!result2) throw new Error('Empty response from AI');
+    addToQueue(result2, `analysis · ${provider.name}`, file.name);
     switchTab('queue');
-    showToast(`✓ Analyzed with ${provider.name} — added to queue`);
+    showToast(`✓ Analysis added to queue`);
   } catch (e) {
     showToast(e.message || 'Analysis failed', 'error');
   } finally {
-    if (btn) { btn.textContent = '🧠'; btn.disabled = false; }
+    if (btn) { btn.textContent = '🤖'; btn.disabled = false; }
   }
-}
-
-// ─── API Keys ─────────────────────────────────────────────────────────────────
-function loadApiKeys() {
-  try {
-    const saved = JSON.parse(localStorage.getItem(APIKEYS_KEY));
-    if (saved) apiKeys = { ...apiKeys, ...saved };
-  } catch {}
-}
-function saveApiKey(name, value) {
-  apiKeys[name] = value.trim();
-  localStorage.setItem(APIKEYS_KEY, JSON.stringify(apiKeys));
-  updateKeyStatus(name); updateKeyDot(name);
-}
-function applyApiKeyUI() {
-  PROVIDERS.forEach(p => {
-    const input = document.getElementById(`setting-${p.id}-key`);
-    if (input && apiKeys[p.id]) input.value = apiKeys[p.id];
-    updateKeyStatus(p.id); updateKeyDot(p.id);
-  });
-}
-function updateKeyStatus(name) {
-  const el  = document.getElementById(`${name}-key-status`);
-  const p   = PROVIDERS.find(x => x.id === name);
-  if (!el || !p) return;
-  const val = apiKeys[name] || '';
-  if (!val) { el.textContent = ''; el.className = 'key-status'; return; }
-  const ok = val.length >= p.minLen && (!p.prefix || val.startsWith(p.prefix));
-  el.textContent = ok ? '✓ Key saved' : (p.prefix ? `⚠️ Should start with "${p.prefix}"` : '⚠️ Key looks too short');
-  el.className   = ok ? 'key-status key-status--ok' : 'key-status key-status--warn';
-}
-function updateKeyDot(name) {
-  const dot = document.getElementById(`dot-${name}`);
-  if (!dot) return;
-  const val = apiKeys[name] || '';
-  const p   = PROVIDERS.find(x => x.id === name);
-  const ok  = val.length >= (p?.minLen || 10) && (!p?.prefix || val.startsWith(p.prefix));
-  dot.className = val ? (ok ? 'key-dot key-dot--ok' : 'key-dot key-dot--warn') : 'key-dot';
-}
-function toggleKeyCard(id) {
-  const body    = document.getElementById(`body-${id}`);
-  const chevron = document.getElementById(`chevron-${id}`);
-  const isOpen  = body.style.display !== 'none';
-  body.style.display = isOpen ? 'none' : 'block';
-  chevron.style.transform = isOpen ? '' : 'rotate(90deg)';
-  if (!isOpen) {
-    const input = document.getElementById(`setting-${id}-key`);
-    if (input && apiKeys[id]) input.value = apiKeys[id];
-    updateKeyStatus(id);
-  }
-}
-function toggleKeyVisibility(inputId, btn) {
-  const input = document.getElementById(inputId);
-  if (!input) return;
-  const hidden = input.type === 'password';
-  input.type = hidden ? 'text' : 'password';
-  btn.textContent = hidden ? '🙈' : '👁️';
 }
 
 // ─── Share Target ─────────────────────────────────────────────────────────────
 function checkShareTarget() {
-  const p = new URLSearchParams(window.location.search);
-  const text = p.get('text') || p.get('import') || p.get('url') || '';
-  if (!text.trim()) return;
-  let label = p.get('title') || '';
-  if (!label && p.get('url')) { try { label = new URL(p.get('url')).hostname; } catch { label = 'shared'; } }
-  queue.push({ id: Date.now(), content: text.trim(), label: label || 'shared', source: 'share', added: new Date().toISOString() });
-  saveQueue(); renderQueue(); updateBadge();
-  window.history.replaceState({}, '', '/infinitypaste/');
-  switchTab('queue'); showToast('✓ Added from share');
+  const params = new URLSearchParams(window.location.search);
+  const shared = params.get('share-target-text') || params.get('text') || params.get('url');
+  if (shared) {
+    document.getElementById('collect-input').value = shared;
+    switchTab('collect');
+    window.history.replaceState({}, '', window.location.pathname);
+  }
 }
 
-// ─── Selection capture ────────────────────────────────────────────────────────
+// ─── File Upload ──────────────────────────────────────────────────────────────
+function initUploadInput() {
+  const input = document.getElementById('file-upload-input');
+  if (input) input.addEventListener('change', handleFileUpload);
+}
+function triggerUpload() { document.getElementById('file-upload-input').click(); }
+async function handleFileUpload(e) {
+  const uploads = [...e.target.files];
+  e.target.value = '';
+  if (!uploads.length) return;
+  let added = 0;
+  for (const file of uploads) {
+    const id   = Date.now() + Math.random();
+    const record = { id, name: file.name, type: file.type, size: file.size, added: new Date().toISOString() };
+    files.push(record);
+    await idbFilePut({ id, blob: file });
+    added++;
+  }
+  saveFiles(); renderFiles(); updateStats();
+  showToast(`✓ ${added} file${added !== 1 ? 's' : ''} uploaded`);
+}
+
+// ─── Files Storage ────────────────────────────────────────────────────────────
+function loadFiles() {
+  try { files = JSON.parse(localStorage.getItem(FILES_KEY)) || []; }
+  catch { files = []; }
+}
+function saveFiles() { localStorage.setItem(FILES_KEY, JSON.stringify(files.map(f => { const {ocrText,...rest} = f; return rest; }))); }
+async function clearAllFiles() {
+  if (!files.length) { showToast('No files to clear'); return; }
+  await idbFileClear(); files = [];
+  saveFiles(); renderFiles(); updateStats(); showToast('All files cleared');
+}
+async function deleteFile(id) {
+  await idbFileDelete(id);
+  files = files.filter(f => f.id !== id);
+  saveFiles(); renderFiles(); updateStats(); showToast('File deleted');
+}
+
+// ─── Render Files ─────────────────────────────────────────────────────────────
+function renderFiles() {
+  const list  = document.getElementById('files-list');
+  const empty = document.getElementById('files-empty');
+  if (!files.length) {
+    empty.style.display = 'flex'; return;
+  }
+  empty.style.display = 'none';
+  const existing = new Set([...list.querySelectorAll('[data-file-id]')].map(el => el.dataset.fileId));
+  const current  = new Set(files.map(f => String(f.id)));
+  existing.forEach(id => { if (!current.has(id)) list.querySelector(`[data-file-id="${id}"]`)?.remove(); });
+  files.forEach(file => {
+    if (existing.has(String(file.id))) return;
+    const card = document.createElement('div');
+    card.className = 'file-card'; card.dataset.fileId = file.id;
+    const isImg = isImageFile({ name: file.name, type: file.type });
+    const isPdf = isPdfFile({ name: file.name, type: file.type });
+    const canOcr = isImg;
+    const canAnalyze = true;
+    card.innerHTML = `
+      <div class="file-info" onclick="openFileViewer(${file.id})">
+        <span class="file-icon">${fileIcon(file.name)}</span>
+        <div class="file-details">
+          <div class="file-name">${escapeHtml(file.name)}</div>
+          <div class="file-meta">${formatBytes(file.size)} · ${formatTime(file.added)}</div>
+        </div>
+      </div>
+      <div class="file-actions">
+        ${canOcr ? `<button class="card-btn" id="ocr-btn-${file.id}" onclick="ocrFile(${file.id})" title="OCR">🔍</button>` : ''}
+        ${isPdf  ? `<button class="card-btn" id="pdf-btn-${file.id}" onclick="extractPdfToQueue(${file.id})" title="Extract PDF text">📄</button>` : ''}
+        <button class="card-btn" id="analyze-btn-${file.id}" onclick="analyzeFile(${file.id})" title="AI Analyze">🤖</button>
+        <button class="card-btn card-btn--delete" onclick="deleteFile(${file.id})">✕</button>
+      </div>`;
+    list.appendChild(card);
+  });
+}
+
+// ─── File Viewer ──────────────────────────────────────────────────────────────
+async function openFileViewer(id) {
+  const file = files.find(f => f.id == id);
+  if (!file) return;
+  document.getElementById('files-list-view').style.display = 'none';
+  document.getElementById('file-viewer').style.display    = 'flex';
+  document.getElementById('viewer-filename').textContent  = file.name;
+  const content = document.getElementById('viewer-content');
+  content.dataset.fileName = file.name;
+  content.innerHTML = '<div class="file-loading">Loading…</div>';
+  try {
+    const stored = await idbFileGet(id);
+    if (!stored?.blob) throw new Error('File data not found');
+    if (isImageFile({ name: file.name, type: file.type })) {
+      const url = URL.createObjectURL(stored.blob);
+      content.innerHTML = `<img src="${url}" style="max-width:100%;border-radius:8px" alt="${escapeHtml(file.name)}">`;
+    } else if (isPdfFile({ name: file.name, type: file.type })) {
+      const text = await extractPdfText(stored.blob);
+      content.textContent = text;
+    } else {
+      const text = await stored.blob.text();
+      content.textContent = text;
+    }
+  } catch (e) {
+    content.innerHTML = `<div class="file-error">${escapeHtml(e.message)}</div>`;
+  }
+}
+function closeFileViewer() {
+  document.getElementById('files-list-view').style.display = '';
+  document.getElementById('file-viewer').style.display    = 'none';
+}
+
+async function extractPdfToQueue(fileId) {
+  const file = files.find(f => f.id == fileId);
+  if (!file) return;
+  const btn = document.getElementById(`pdf-btn-${fileId}`);
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+  showToast('Extracting PDF text…');
+  try {
+    const stored = await idbFileGet(fileId);
+    if (!stored?.blob) throw new Error('PDF data missing');
+    const text = await extractPdfText(stored.blob);
+    if (!text) throw new Error('No text found in PDF');
+    addToQueue(text, 'pdf', file.name);
+    switchTab('queue');
+    showToast('✓ PDF text added to queue');
+  } catch (e) {
+    showToast(e.message || 'PDF extraction failed', 'error');
+  } finally {
+    if (btn) { btn.textContent = '📄'; btn.disabled = false; }
+  }
+}
+
+// ─── Selection Capture ────────────────────────────────────────────────────────
 function initSelectionCapture() {
   document.addEventListener('selectionchange', () => {
-    const txt = window.getSelection()?.toString().trim();
-    if (txt) _capturedSelection = txt;
+    const sel = window.getSelection()?.toString().trim();
+    if (sel) _capturedSelection = sel;
   });
-  const btn = document.getElementById('add-selection-btn');
-  if (btn) btn.addEventListener('touchstart', () => {
-    const txt = window.getSelection()?.toString().trim();
-    if (txt) _capturedSelection = txt;
-  }, { passive: true });
+}
+function addSelectionToQueue() {
+  const content = _capturedSelection ||
+    window.getSelection()?.toString().trim() ||
+    document.getElementById('viewer-content')?.textContent?.trim();
+  if (!content) { showToast('Select some text first', 'error'); return; }
+  addToQueue(content, null, document.getElementById('viewer-content')?.dataset.fileName || 'file');
 }
 
-// ─── Storage ──────────────────────────────────────────────────────────────────
-function loadQueue() { try { queue = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch { queue = []; } }
-function saveQueue() { localStorage.setItem(STORAGE_KEY, JSON.stringify(queue)); }
-function loadFiles() {
-  try { files = JSON.parse(localStorage.getItem(FILES_KEY)) || []; } catch { files = []; }
-  let dirty = false;
-  files.forEach(f => {
-    if (f.content && f.content.startsWith('data:')) { delete f.content; dirty = true; }
+// ─── API Keys ─────────────────────────────────────────────────────────────────
+function loadApiKeys()  { try { apiKeys = JSON.parse(localStorage.getItem(APIKEYS_KEY)) || {}; } catch { apiKeys = {}; } }
+function saveApiKey(id, value) { apiKeys[id] = value.trim(); localStorage.setItem(APIKEYS_KEY, JSON.stringify(apiKeys)); showToast('Key saved'); }
+function deleteApiKey(id) { delete apiKeys[id]; localStorage.setItem(APIKEYS_KEY, JSON.stringify(apiKeys)); applyApiKeyUI(); showToast('Key removed'); }
+function toggleKeyCard(id) {
+  const card   = document.getElementById(`key-card-${id}`);
+  const body   = document.getElementById(`key-body-${id}`);
+  const arrow  = card.querySelector('.key-provider-arrow');
+  const isOpen = card.classList.toggle('open');
+  body.style.display  = isOpen ? 'block' : 'none';
+  if (arrow) arrow.textContent = isOpen ? '▲' : '▼';
+  if (isOpen) { const inp = document.getElementById(`key-input-${id}`); if (inp) inp.value = apiKeys[id] || ''; }
+}
+function applyApiKeyUI() {
+  PROVIDERS.forEach(p => {
+    const dot    = document.getElementById(`key-dot-${p.id}`);
+    const status = document.getElementById(`key-status-${p.id}`);
+    const hasKey = !!(apiKeys[p.id]);
+    if (dot)    { dot.className = `key-status-dot ${hasKey ? 'key-status-dot--active' : ''}`; }
+    if (status) status.textContent = hasKey ? '✓ Key saved' : '';
   });
-  if (dirty) saveFiles();
 }
-function saveFiles() {
-  try { localStorage.setItem(FILES_KEY, JSON.stringify(files)); }
-  catch { showToast('Storage full — remove some files', 'error'); }
-}
+
+// ─── Settings ─────────────────────────────────────────────────────────────────
 function loadSettings() {
-  try { const s = JSON.parse(localStorage.getItem(SETTINGS_KEY)); if (s) settings = { ...settings, ...s }; } catch {}
+  try {
+    const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY));
+    if (saved) settings = { ...settings, ...saved };
+  } catch {}
 }
 function saveSetting(key, value) {
   settings[key] = value;
   localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
-  if (key === 'shownumbers') renderQueue();
-  updateStats();
+  applySettings();
 }
 function applySettings() {
-  document.getElementById('setting-autoclear').checked   = settings.autoclear;
-  document.getElementById('setting-shownumbers').checked = settings.shownumbers;
-  document.getElementById('setting-separator').value     = settings.separator;
-  updateStats();
+  const ac = document.getElementById('setting-autoclear');
+  const sn = document.getElementById('setting-shownumbers');
+  const sp = document.getElementById('setting-separator');
+  if (ac) ac.checked  = settings.autoclear;
+  if (sn) sn.checked  = settings.shownumbers;
+  if (sp) sp.value    = settings.separator;
 }
 
-// ─── Toast ────────────────────────────────────────────────────────────────────
-let toastTimer;
+// ─── Queue Storage ────────────────────────────────────────────────────────────
+function loadQueue()  { try { queue = JSON.parse(localStorage.getItem(STORAGE_KEY)) || []; } catch { queue = []; } }
+function saveQueue()  { localStorage.setItem(STORAGE_KEY, JSON.stringify(queue)); }
+
+let toastTimer = null;
 function showToast(msg, type) {
   const el = document.getElementById('toast');
   el.textContent = msg;
@@ -601,6 +708,10 @@ function addToQueue(contentOverride, labelOverride, sourceOverride) {
   if (contentOverride === undefined) {
     document.getElementById('collect-input').value = '';
     document.getElementById('collect-label').value = '';
+    const labelEl = document.getElementById('collect-label');
+    if (labelEl) { labelEl.dataset.manualEdit = 'false'; labelEl.dataset.autoTitle = ''; }
+    _showAutoTitleBadge(false);
+    document.getElementById('fetch-bar').style.display = 'none';
   }
   showToast(`✓ Added to queue (${queue.length} item${queue.length !== 1 ? 's' : ''})`);
 }
@@ -609,6 +720,7 @@ async function pasteFromClipboard() {
     const text = await navigator.clipboard.readText();
     if (!text) { showToast('Clipboard is empty', 'error'); return; }
     document.getElementById('collect-input').value = text;
+    onCollectInput();
     showToast('Pasted from clipboard');
   } catch { showToast('Long-press the textarea and choose Paste', 'error'); }
 }
@@ -678,299 +790,87 @@ function _getFilteredQueue() {
 
 // ─── Phase 2: Expand / Collapse card preview ─────────────────────────────────
 function toggleCardExpand(id) {
-  if (expandedCardIds.has(id)) {
-    expandedCardIds.delete(id);
-  } else {
-    expandedCardIds.add(id);
-  }
+  if (expandedCardIds.has(id)) expandedCardIds.delete(id);
+  else expandedCardIds.add(id);
   renderQueue();
-}
-
-// ─── Phase 2: Drag-to-reorder (touch + mouse) ────────────────────────────────
-function _initCardDrag(card, itemId) {
-  // Desktop drag
-  card.draggable = true;
-  card.addEventListener('dragstart', e => {
-    dragSrcId = itemId;
-    e.dataTransfer.effectAllowed = 'move';
-    card.classList.add('queue-card--dragging');
-  });
-  card.addEventListener('dragend', () => {
-    card.classList.remove('queue-card--dragging');
-    document.querySelectorAll('.queue-card--dragover').forEach(el => el.classList.remove('queue-card--dragover'));
-  });
-  card.addEventListener('dragover', e => {
-    e.preventDefault(); e.dataTransfer.dropEffect = 'move';
-    card.classList.add('queue-card--dragover');
-  });
-  card.addEventListener('dragleave', () => card.classList.remove('queue-card--dragover'));
-  card.addEventListener('drop', e => {
-    e.preventDefault();
-    card.classList.remove('queue-card--dragover');
-    if (dragSrcId === itemId) return;
-    _reorderQueue(dragSrcId, itemId);
-  });
-
-  // Touch drag
-  let touchStartY = 0, touchStartX = 0, touchClone = null, touchScrollOff = false;
-  card.addEventListener('touchstart', e => {
-    touchStartY = e.touches[0].clientY;
-    touchStartX = e.touches[0].clientX;
-    touchScrollOff = false;
-    dragSrcId = itemId;
-  }, { passive: true });
-  card.addEventListener('touchmove', e => {
-    const dy = Math.abs(e.touches[0].clientY - touchStartY);
-    const dx = Math.abs(e.touches[0].clientX - touchStartX);
-    // Only hijack vertical drags >8px; ignore horizontal scrolling
-    if (dy < 8 && !touchClone) return;
-    if (dx > dy * 1.5 && !touchClone) { touchScrollOff = true; return; }
-    if (touchScrollOff) return;
-    e.preventDefault();
-    if (!touchClone) {
-      touchClone = card.cloneNode(true);
-      touchClone.style.cssText = `position:fixed;opacity:0.85;pointer-events:none;z-index:9999;width:${card.offsetWidth}px;left:${card.getBoundingClientRect().left}px;box-shadow:0 8px 24px rgba(0,0,0,0.4);`;
-      document.body.appendChild(touchClone);
-      card.classList.add('queue-card--dragging');
-    }
-    touchClone.style.top = (e.touches[0].clientY - 30) + 'px';
-    // Highlight drop target
-    document.querySelectorAll('.queue-card--dragover').forEach(el => el.classList.remove('queue-card--dragover'));
-    const el = document.elementFromPoint(e.touches[0].clientX, e.touches[0].clientY)?.closest('.queue-card');
-    if (el && el !== card) el.classList.add('queue-card--dragover');
-  }, { passive: false });
-  card.addEventListener('touchend', e => {
-    if (touchClone) { touchClone.remove(); touchClone = null; }
-    card.classList.remove('queue-card--dragging');
-    if (touchScrollOff) { dragSrcId = null; return; }
-    const el = document.elementFromPoint(e.changedTouches[0].clientX, e.changedTouches[0].clientY)?.closest('.queue-card');
-    document.querySelectorAll('.queue-card--dragover').forEach(x => x.classList.remove('queue-card--dragover'));
-    if (el) {
-      const targetId = parseInt(el.dataset.itemId, 10);
-      if (targetId && targetId !== dragSrcId) _reorderQueue(dragSrcId, targetId);
-    }
-    dragSrcId = null;
-  });
-}
-
-function _reorderQueue(srcId, destId) {
-  const srcIdx  = queue.findIndex(i => i.id === srcId);
-  const destIdx = queue.findIndex(i => i.id === destId);
-  if (srcIdx === -1 || destIdx === -1) return;
-  const [moved] = queue.splice(srcIdx, 1);
-  queue.splice(destIdx, 0, moved);
-  // Switch to custom sort so order is preserved
-  queueSortMode = 'custom';
-  const sel = document.getElementById('queue-sort');
-  if (sel) sel.value = 'custom';
-  saveQueue(); renderQueue(); updateBadge();
 }
 
 // ─── Render Queue ─────────────────────────────────────────────────────────────
 function renderQueue() {
   const list  = document.getElementById('queue-list');
   const empty = document.getElementById('queue-empty');
-  document.getElementById('queue-count-label').textContent = `${queue.length} item${queue.length !== 1 ? 's' : ''}`;
+  const items = _getFilteredQueue();
 
-  const filtered = _getFilteredQueue();
-
-  if (!queue.length) {
-    empty.style.display = 'flex'; list.querySelectorAll('.queue-card').forEach(el => el.remove()); return;
-  }
-  empty.style.display = 'none'; list.innerHTML = ''; list.appendChild(empty);
-
-  if (filtered.length === 0 && queueSearchTerm) {
-    const noResult = document.createElement('div');
-    noResult.className = 'queue-empty';
-    noResult.innerHTML = '<div class="empty-icon">🔍</div><p>No results for "' + escapeHtml(queueSearchTerm) + '"</p>';
-    list.appendChild(noResult);
+  if (!items.length) {
+    empty.style.display = 'flex';
+    list.querySelectorAll('.queue-card').forEach(el => el.remove());
     return;
   }
+  empty.style.display = 'none';
 
-  filtered.forEach((item, i) => {
+  // Remove cards no longer in view
+  const currentIds = new Set(items.map(i => String(i.id)));
+  list.querySelectorAll('.queue-card').forEach(el => {
+    if (!currentIds.has(el.dataset.id)) el.remove();
+  });
+
+  items.forEach((item, idx) => {
     const isExpanded = expandedCardIds.has(item.id);
-    const isLong = item.content.length > 120;
-    const preview = isExpanded ? item.content : (isLong ? item.content.slice(0, 120) + '…' : item.content);
-
-    const card = document.createElement('div');
-    card.className = 'queue-card';
-    card.dataset.itemId = item.id;
-
-    card.innerHTML = `
+    const preview    = item.content.length > 120 && !isExpanded
+      ? item.content.slice(0, 120) + '…'
+      : item.content;
+    let existing = list.querySelector(`.queue-card[data-id="${item.id}"]`);
+    if (!existing) {
+      existing = document.createElement('div');
+      existing.className = 'queue-card';
+      existing.dataset.id = item.id;
+      existing.draggable = true;
+      existing.addEventListener('dragstart', onDragStart);
+      existing.addEventListener('dragover',  onDragOver);
+      existing.addEventListener('drop',      onDrop);
+      existing.addEventListener('dragend',   onDragEnd);
+      list.appendChild(existing);
+    }
+    existing.innerHTML = `
       <div class="card-header">
+        <span class="card-index">${settings.shownumbers ? idx + 1 : ''}</span>
         <div class="card-meta">
-          ${settings.shownumbers ? `<span class="card-num">${i + 1}</span>` : ''}
           ${item.label  ? `<span class="card-label">${escapeHtml(item.label)}</span>` : ''}
           ${item.source ? `<span class="card-source">${escapeHtml(item.source)}</span>` : ''}
         </div>
-        <div class="card-actions">
-          <button class="card-btn card-btn--copy" onclick="copyItem(${item.id})">Copy</button>
-          <button class="card-btn card-btn--delete" onclick="removeItem(${item.id})">✕</button>
-        </div>
+        <span class="card-time">${formatTime(item.added)}</span>
       </div>
-      <div class="card-preview${isExpanded ? ' card-preview--expanded' : ''}" onclick="${isLong ? `toggleCardExpand(${item.id})` : ''}" style="${isLong ? 'cursor:pointer' : ''}">${escapeHtml(preview)}</div>
-      ${isLong ? `<div class="card-expand-hint">${isExpanded ? '▲ Show less' : '▼ Show more'}</div>` : ''}
-      <div class="card-time">${formatTime(item.added)}</div>`;
-
-    _initCardDrag(card, item.id);
-    list.appendChild(card);
-  });
-}
-
-// ─── Upload ───────────────────────────────────────────────────────────────────
-function initUploadInput() {
-  document.getElementById('file-upload-input')?.remove();
-  const input = document.createElement('input');
-  input.type = 'file'; input.id = 'file-upload-input'; input.multiple = true; input.accept = '*/*';
-  input.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;width:1px;height:1px;';
-  input.addEventListener('change', handleFileUpload);
-  document.body.appendChild(input);
-}
-function triggerUpload() { const i = document.getElementById('file-upload-input'); if (i) { i.value = ''; i.click(); } }
-async function handleFileUpload(event) {
-  const uploaded = Array.from(event.target.files || []);
-  if (!uploaded.length) return;
-  let added = 0;
-  for (const file of uploaded) {
-    try {
-      const id = Date.now() + Math.random();
-      const meta = { id, name: file.name, type: file.type || 'text/plain', size: file.size, ocrText: null, added: new Date().toISOString() };
-      if (isImageFile(file)) {
-        await idbFilePut({ id, blob: file, mimeType: file.type });
-        files.push(meta);
-      } else if (isPdfFile(file)) {
-        await idbFilePut({ id, blob: file, mimeType: 'application/pdf' });
-        files.push(meta);
-      } else {
-        const content = await readTextFile(file);
-        files.push({ ...meta, content });
-      }
-      added++;
-    } catch { showToast(`Could not read ${file.name}`, 'error'); }
-  }
-  saveFiles(); renderFiles(); updateStats();
-  showToast(`✓ Added ${added} file${added !== 1 ? 's' : ''}`);
-}
-function readTextFile(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload  = e => resolve(e.target.result);
-    reader.onerror = () => reject(new Error('Read failed'));
-    reader.readAsText(file, 'UTF-8');
-  });
-}
-
-// ─── Files ────────────────────────────────────────────────────────────────────
-function renderFiles() {
-  const list  = document.getElementById('files-list');
-  const empty = document.getElementById('files-empty');
-  if (!files.length) { empty.style.display = 'flex'; list.querySelectorAll('.file-row').forEach(el => el.remove()); return; }
-  empty.style.display = 'none'; list.innerHTML = ''; list.appendChild(empty);
-  files.forEach(file => {
-    const isImg  = IMAGE_TYPES.includes(file.type) || IMAGE_EXTS.includes(file.name.split('.').pop().toLowerCase());
-    const isPdf  = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-    const hasOcr = isImg && !!file.ocrText;
-    const analyzeProvider = _getAnalyzeProvider();
-    const row = document.createElement('div'); row.className = 'file-row';
-    row.innerHTML = `
-      <div class="file-row-info" onclick="openFileViewer(${JSON.stringify(file.id)})">
-        <span class="file-icon">${fileIcon(file.name)}</span>
-        <div class="file-meta">
-          <div class="file-name">${escapeHtml(file.name)}</div>
-          <div class="file-size">${formatBytes(file.size || 0)} · ${formatTime(file.added)}${hasOcr ? ' · <span style="color:var(--success)">OCR✓</span>' : ''}</div>
-        </div>
-      </div>
-      <div class="file-row-actions">
-        ${isImg ? `<button class="card-btn card-btn--transcribe" id="ocr-btn-${file.id}" onclick="ocrFile(${JSON.stringify(file.id)})" title="Extract text locally (free)">🔍</button>` : ''}
-        ${isPdf ? `<button class="card-btn card-btn--transcribe" id="pdf-btn-${file.id}" onclick="extractPdfFileText(${JSON.stringify(file.id)})" title="Extract PDF text">📄</button>` : ''}
-        ${hasOcr && analyzeProvider ? `<button class="card-btn card-btn--transcribe" id="analyze-btn-${file.id}" onclick="analyzeOcrText(${JSON.stringify(file.id)})" title="Analyze with ${analyzeProvider.name}">🧠</button>` : ''}
-        ${hasOcr && !analyzeProvider ? `<button class="card-btn" style="opacity:0.4;cursor:default" title="Add a Groq/DeepSeek/Mistral/Cerebras key to enable">🧠</button>` : ''}
-        <button class="card-btn card-btn--delete" onclick="removeFile(${JSON.stringify(file.id)})">✕</button>
+      <div class="card-preview" onclick="toggleCardExpand(${item.id})">${escapeHtml(preview)}</div>
+      ${ item.content.length > 120 ? `<button class="card-expand-btn" onclick="toggleCardExpand(${item.id})">${isExpanded ? '▲ Collapse' : '▼ More'}</button>` : '' }
+      <div class="card-actions">
+        <button class="card-btn card-btn--copy" onclick="copyItem(${item.id})">📋</button>
+        <button class="card-btn card-btn--delete" onclick="removeItem(${item.id})">✕</button>
       </div>`;
-    list.appendChild(row);
   });
 }
 
-async function extractPdfFileText(fileId) {
-  const file = files.find(f => f.id == fileId);
-  if (!file) return;
-  const btn = document.getElementById(`pdf-btn-${fileId}`);
-  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
-  showToast('Extracting PDF text…');
-  try {
-    const stored = await idbFileGet(fileId);
-    if (!stored?.blob) throw new Error('PDF data missing — please re-upload the file');
-    const text = await extractPdfText(stored.blob);
-    if (!text.trim()) throw new Error('No extractable text found in this PDF');
-    addToQueue(text, 'pdf', file.name);
-    switchTab('queue');
-    showToast('✓ PDF text added to queue');
-  } catch (e) {
-    showToast(e.message || 'PDF extraction failed', 'error');
-  } finally {
-    if (btn) { btn.textContent = '📄'; btn.disabled = false; }
-  }
+// ─── Phase 2: Drag-to-reorder ─────────────────────────────────────────────────
+function onDragStart(e) {
+  dragSrcId = parseInt(e.currentTarget.dataset.id);
+  e.currentTarget.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
 }
-
-async function openFileViewer(id) {
-  const file = files.find(f => f.id == id);
-  if (!file) return;
-  _capturedSelection = '';
-  document.getElementById('files-list-view').style.display = 'none';
-  document.getElementById('file-viewer').style.display     = 'flex';
-  document.getElementById('viewer-filename').textContent   = file.name;
-  const content = document.getElementById('viewer-content');
-  const isImg = IMAGE_TYPES.includes(file.type) || IMAGE_EXTS.includes(file.name.split('.').pop().toLowerCase());
-  const isPdf = file.type === 'application/pdf' || file.name.toLowerCase().endsWith('.pdf');
-  if (isImg) {
-    try {
-      const stored = await idbFileGet(id);
-      if (stored?.blob) {
-        const url = URL.createObjectURL(stored.blob);
-        content.innerHTML = `<img src="${url}" alt="${escapeHtml(file.name)}" style="max-width:100%;border-radius:8px;" />`
-          + (file.ocrText ? `<pre style="margin-top:1rem;white-space:pre-wrap;font-size:0.85rem;opacity:0.8">${escapeHtml(file.ocrText)}</pre>` : '');
-        setTimeout(() => URL.revokeObjectURL(url), 10000);
-      } else {
-        content.textContent = '[Image data not found — please re-upload]';
-      }
-    } catch { content.textContent = '[Could not load image]'; }
-  } else if (isPdf) {
-    content.textContent = 'Tap 📄 to extract text from this PDF.';
-  } else {
-    content.textContent = file.content || '';
-  }
-  content.dataset.fileId   = id;
-  content.dataset.fileName = file.name;
-  const btn = document.getElementById('add-selection-btn');
-  if (btn) {
-    const fresh = btn.cloneNode(true); btn.parentNode.replaceChild(fresh, btn);
-    fresh.addEventListener('touchstart', () => {
-      const txt = window.getSelection()?.toString().trim();
-      if (txt) _capturedSelection = txt;
-    }, { passive: true });
-  }
+function onDragOver(e) { e.preventDefault(); e.dataTransfer.dropEffect = 'move'; }
+function onDrop(e) {
+  e.preventDefault();
+  const targetId = parseInt(e.currentTarget.dataset.id);
+  if (dragSrcId === null || dragSrcId === targetId) return;
+  const srcIdx    = queue.findIndex(i => i.id === dragSrcId);
+  const targetIdx = queue.findIndex(i => i.id === targetId);
+  if (srcIdx < 0 || targetIdx < 0) return;
+  const [moved] = queue.splice(srcIdx, 1);
+  queue.splice(targetIdx, 0, moved);
+  queueSortMode = 'custom';
+  const sel = document.getElementById('queue-sort');
+  if (sel) sel.value = 'custom';
+  saveQueue(); renderQueue();
 }
-function closeFileViewer() {
-  _capturedSelection = '';
-  document.getElementById('file-viewer').style.display     = 'none';
-  document.getElementById('files-list-view').style.display = 'block';
-}
-function addSelectionToQueue() {
-  const text = window.getSelection()?.toString().trim() || _capturedSelection;
-  if (!text) { showToast('Select some text first, then tap + Add Selection', 'error'); return; }
-  const content  = document.getElementById('viewer-content');
-  addToQueue(text, null, content.dataset.fileName || 'file');
-  _capturedSelection = ''; window.getSelection()?.removeAllRanges();
-}
-async function removeFile(id) {
-  try { await idbFileDelete(id); } catch {}
-  files = files.filter(f => f.id != id);
-  saveFiles(); renderFiles(); updateStats(); showToast('File removed');
-}
-async function clearAllFiles() {
-  try { await idbFileClear(); } catch {}
-  files = []; saveFiles(); renderFiles(); updateStats(); closeFileViewer(); showToast('All files cleared');
-}
+function onDragEnd(e) { e.currentTarget.classList.remove('dragging'); dragSrcId = null; }
 
 // ─── Compose ──────────────────────────────────────────────────────────────────
 function initCompose() { document.getElementById('compose-area').addEventListener('input', updateComposeStats); }
@@ -1047,6 +947,238 @@ function fileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
   return ({pdf:'📕',md:'📝',txt:'📄',js:'🟨',ts:'🔷',tsx:'⚛️',jsx:'⚛️',json:'📦',css:'🎨',html:'🌐',py:'🐍',swift:'🍎',csv:'📊',xml:'📋',sh:'⚡',png:'🖼️',jpg:'🖼️',jpeg:'🖼️',gif:'🖼️',webp:'🖼️',bmp:'🖼️',tiff:'🖼️',heic:'🖼️',heif:'🖼️'})[ext] || '📄';
 }
+
+// ─── Phase 3: URL Detection & Readability Fetch ───────────────────────────────
+const READABILITY_CDN = 'https://cdn.jsdelivr.net/npm/@mozilla/readability@0.5.0/Readability.js';
+let _readabilityLoaded = false;
+
+function _loadReadability() {
+  if (_readabilityLoaded) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = READABILITY_CDN;
+    s.onload  = () => { _readabilityLoaded = true; resolve(); };
+    s.onerror = () => reject(new Error('Failed to load Readability. Check your connection.'));
+    document.head.appendChild(s);
+  });
+}
+
+// Auto-detect URL in collect textarea and show/hide the fetch bar
+let _autoTitleTimer = null;
+function onCollectInput() {
+  const val = document.getElementById('collect-input').value.trim();
+  const isUrl = /^https?:\/\/\S+/i.test(val);
+  document.getElementById('fetch-bar').style.display = isUrl ? 'flex' : 'none';
+  if (isUrl) autoTitleFromUrl(val);
+  // AutoTitle debounce
+  clearTimeout(_autoTitleTimer);
+  _autoTitleTimer = setTimeout(() => runAutoTitle(), 800);
+}
+
+async function fetchUrl() {
+  const url = document.getElementById('collect-input').value.trim();
+  if (!url) return;
+  const btn = document.getElementById('fetch-btn');
+  btn.disabled = true; btn.textContent = '⏳';
+  showToast('Fetching page…');
+  try {
+    // Use allorigins proxy to bypass CORS
+    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+    const res = await fetch(proxyUrl);
+    if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
+    const json = await res.json();
+    const rawHtml = json.contents;
+    if (!rawHtml) throw new Error('Empty response from server');
+
+    await _loadReadability();
+
+    // Extract tables BEFORE Readability strips them (Feature 5)
+    const tables = _extractMarkdownTables(rawHtml);
+
+    // Parse with Readability
+    const parser  = new DOMParser();
+    const doc     = parser.parseFromString(rawHtml, 'text/html');
+    const base    = doc.createElement('base'); base.href = url;
+    doc.head.appendChild(base);
+    const article = new Readability(doc).parse();
+    const title   = article?.title || _domainFromUrl(url);
+    let   text    = article?.textContent?.trim() || '';
+
+    if (!text) throw new Error('No readable content found on page');
+
+    // Append extracted markdown tables if any found
+    if (tables.length) {
+      text += '\n\n## Extracted Tables\n\n' + tables.join('\n\n');
+    }
+
+    document.getElementById('collect-input').value = text;
+    // Auto-fill label with page title
+    const labelEl = document.getElementById('collect-label');
+    if (!labelEl.value || labelEl.dataset.autoTitle === 'true') {
+      labelEl.value = title;
+      labelEl.dataset.autoTitle = 'true';
+      _showAutoTitleBadge(true);
+    }
+    document.getElementById('fetch-bar').style.display = 'none';
+    showToast(`✓ Fetched — ${text.length.toLocaleString()} chars${tables.length ? ` · ${tables.length} table${tables.length > 1 ? 's' : ''} extracted` : ''}`);
+  } catch (e) {
+    showToast(e.message || 'Fetch failed', 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '🌐 Fetch';
+  }
+}
+
+// Feature 5: Extract HTML tables as Markdown before Readability strips them
+function _extractMarkdownTables(html) {
+  const parser = new DOMParser();
+  const doc    = parser.parseFromString(html, 'text/html');
+  const tables = doc.querySelectorAll('table');
+  const results = [];
+  tables.forEach(table => {
+    const rows = [];
+    const headers = [...table.querySelectorAll('th')].map(th => th.textContent.trim().replace(/\|/g, '\\|'));
+    if (headers.length) {
+      rows.push('| ' + headers.join(' | ') + ' |');
+      rows.push('| ' + headers.map(() => '---').join(' | ') + ' |');
+    }
+    table.querySelectorAll('tr').forEach(tr => {
+      const cells = [...tr.querySelectorAll('td')].map(td => td.textContent.trim().replace(/\|/g, '\\|').replace(/\n+/g, ' '));
+      if (cells.length) rows.push('| ' + cells.join(' | ') + ' |');
+    });
+    if (rows.length > 1) results.push(rows.join('\n'));
+  });
+  return results;
+}
+
+function _domainFromUrl(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ''); } catch { return url; }
+}
+
+// Feature 7: Save current textarea content as a named File
+async function saveCurrentAsFile() {
+  const content = document.getElementById('collect-input').value.trim();
+  if (!content) { showToast('Nothing to save — fetch a page first', 'error'); return; }
+  const label = document.getElementById('collect-label').value.trim() || 'Fetched Page';
+  const filename = label.replace(/[^a-z0-9 _\-]/gi, '').trim().replace(/\s+/g, '-') || 'page';
+  const blob = new Blob([content], { type: 'text/plain' });
+  const id   = Date.now();
+  const fileRecord = {
+    id, name: `${filename}.txt`,
+    type: 'text/plain', size: blob.size,
+    added: new Date().toISOString()
+  };
+  files.push(fileRecord);
+  saveFiles();
+  await idbFilePut({ id, blob });
+  renderFiles(); updateStats();
+  showToast(`✓ Saved as "${fileRecord.name}" in Files`);
+}
+
+// ─── Phase 3: AutoTitle ───────────────────────────────────────────────────────
+let _autoTitleActive = false;
+
+function autoTitleFromUrl(url) {
+  const labelEl = document.getElementById('collect-label');
+  if (!labelEl || labelEl.dataset.manualEdit === 'true') return;
+  try {
+    const u = new URL(url);
+    const slug = u.pathname.replace(/\/$/, '').split('/').pop().replace(/[-_]/g, ' ').replace(/\.[^.]+$/, '').trim();
+    const title = slug ? `${u.hostname.replace(/^www\./, '')} — ${slug}` : u.hostname.replace(/^www\./, '');
+    if (title) {
+      labelEl.value = title;
+      labelEl.dataset.autoTitle = 'true';
+      _showAutoTitleBadge(true);
+    }
+  } catch {}
+}
+
+function runAutoTitle() {
+  const labelEl = document.getElementById('collect-label');
+  if (!labelEl || labelEl.dataset.manualEdit === 'true') return;
+
+  const content = document.getElementById('collect-input').value.trim();
+  if (!content) { clearAutoTitle(); return; }
+
+  const isUrl = /^https?:\/\/\S+/i.test(content);
+  if (isUrl) return; // handled by autoTitleFromUrl
+
+  let title = '';
+  const firstLine = content.split('\n')[0].trim();
+  if (firstLine.length > 0 && firstLine.length <= 80 && !/[.!?]$/.test(firstLine)) {
+    title = firstLine;
+  } else {
+    title = _extractKeywords(content, 4).join(' · ');
+  }
+
+  if (title && !labelEl.value) {
+    labelEl.value = title;
+    labelEl.dataset.autoTitle = 'true';
+    _showAutoTitleBadge(true);
+  }
+}
+
+function _extractKeywords(text, count) {
+  const stopWords = new Set(['the','a','an','and','or','but','in','on','at','to','for','of','with','by','from','is','was','are','were','be','been','have','has','had','do','does','did','will','would','could','should','may','might','this','that','these','those','i','you','he','she','it','we','they','what','which','who','when','where','why','how','all','each','every','both','few','more','most','other','some','such','no','nor','not','only','own','same','so','than','too','very','just','because','as','until','while','about','into','through','during','before','after','above','below','between','out','off','over','under','again','then','once','here','there','if','can','its','your','our','their','his','her','my']);
+  const words = text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 3 && !stopWords.has(w));
+  const freq = {};
+  words.forEach(w => freq[w] = (freq[w] || 0) + 1);
+  return Object.entries(freq).sort((a,b) => b[1]-a[1]).slice(0, count).map(([w]) => w);
+}
+
+function _showAutoTitleBadge(show) {
+  const badge = document.getElementById('autotitle-badge');
+  if (badge) badge.style.display = show ? 'inline-flex' : 'none';
+  _autoTitleActive = show;
+}
+
+function clearAutoTitle() {
+  const labelEl = document.getElementById('collect-label');
+  if (labelEl) { labelEl.dataset.autoTitle = ''; _showAutoTitleBadge(false); }
+}
+
+function onLabelInput() {
+  const labelEl = document.getElementById('collect-label');
+  if (labelEl) {
+    labelEl.dataset.manualEdit = labelEl.value ? 'true' : 'false';
+    if (!labelEl.value) { labelEl.dataset.manualEdit = 'false'; _showAutoTitleBadge(false); }
+    else _showAutoTitleBadge(false);
+  }
+}
+
+// ─── Phase 3: Safari Bookmarklet Generator ────────────────────────────────────
+function generateBookmarklet() {
+  const appUrl = window.location.href.split('#')[0].split('?')[0];
+  const code = `(function(){var t=document.body.innerText||document.documentElement.innerText||'';var u=window.location.href;var ti=document.title||u;var target=window.open('${appUrl}','infinitypaste');if(target){var msg=JSON.stringify({type:'infinitypaste_inject',text:t,source:u,title:ti});var interval=setInterval(function(){target.postMessage(msg,'*');},300);setTimeout(function(){clearInterval(interval);},5000);}else{alert('Allow pop-ups for this site. Or visit InfinityPaste manually and paste.');}})()`;
+  const bookmarkletUrl = 'javascript:' + encodeURIComponent(code);
+  document.getElementById('bookmarklet-url').value = bookmarkletUrl;
+  document.getElementById('bookmarklet-area').style.display = 'flex';
+  showToast('✓ Bookmarklet ready — see Settings');
+}
+
+function copyBookmarklet() {
+  const val = document.getElementById('bookmarklet-url').value;
+  navigator.clipboard.writeText(val)
+    .then(() => showToast('✓ Copied — paste as a Safari bookmark URL'))
+    .catch(() => showToast('Long-press the field to copy', 'error'));
+}
+
+// Listen for postMessage from bookmarklet
+window.addEventListener('message', function(e) {
+  try {
+    const data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+    if (data?.type === 'infinitypaste_inject' && data.text) {
+      document.getElementById('collect-input').value = data.text.trim();
+      const labelEl = document.getElementById('collect-label');
+      if (labelEl && !labelEl.value) {
+        labelEl.value = data.title || _domainFromUrl(data.source || '');
+        labelEl.dataset.autoTitle = 'true';
+        _showAutoTitleBadge(true);
+      }
+      switchTab('collect');
+      showToast('✓ Page text injected from bookmarklet');
+    }
+  } catch {}
+});
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', init);
