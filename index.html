@@ -58,26 +58,14 @@
     <section class="tab-content active" id="view-collect">
       <div class="collect-area">
         <label class="input-label">Paste or type content</label>
-        <textarea
-          id="collect-input"
-          class="collect-textarea"
-          placeholder="Paste code, text, notes, URLs — anything you want to save to the queue…"
-          rows="8"
-        ></textarea>
+        <textarea id="collect-input" class="collect-textarea"
+          placeholder="Paste code, text, notes, URLs — anything you want to save to the queue…" rows="8"></textarea>
         <div class="collect-meta">
-          <input
-            id="collect-label"
-            class="label-input"
-            type="text"
-            placeholder="Label (optional) — e.g. README, App.tsx fix, prompt"
-          />
+          <input id="collect-label" class="label-input" type="text"
+            placeholder="Label (optional) — e.g. README, App.tsx fix, prompt" />
         </div>
-        <button class="btn btn-primary btn-full" onclick="addToQueue()">
-          + Add to Queue
-        </button>
-        <button class="btn btn-secondary btn-full" onclick="pasteFromClipboard()">
-          📋 Paste from Clipboard
-        </button>
+        <button class="btn btn-primary btn-full" onclick="addToQueue()">+ Add to Queue</button>
+        <button class="btn btn-secondary btn-full" onclick="pasteFromClipboard()">📋 Paste from Clipboard</button>
       </div>
     </section>
 
@@ -86,9 +74,7 @@
       <div id="files-list-view">
         <div class="files-toolbar">
           <span class="section-title">My Files</span>
-          <button class="btn btn-primary btn-sm" onclick="triggerUpload()">
-            + Upload Files
-          </button>
+          <button class="btn btn-primary btn-sm" onclick="triggerUpload()">+ Upload Files</button>
         </div>
         <div class="upload-zone" onclick="triggerUpload()">
           <div class="upload-zone-icon">📂</div>
@@ -116,8 +102,6 @@
 
     <!-- Record Tab -->
     <section class="tab-content" id="view-record">
-
-      <!-- Recorder UI -->
       <div class="record-hero">
         <div class="record-timer" id="record-timer">0:00</div>
         <div class="record-waveform" id="record-waveform">
@@ -130,8 +114,6 @@
         </button>
         <div class="record-status" id="record-status">Tap to record</div>
       </div>
-
-      <!-- Recordings List -->
       <div class="recordings-toolbar">
         <span class="section-title">Recordings</span>
         <button class="btn btn-danger btn-sm" onclick="clearAllRecordings()">Clear All</button>
@@ -143,7 +125,6 @@
           <p class="empty-hint">Tap the mic button above to start.</p>
         </div>
       </div>
-
     </section>
 
     <!-- Queue Tab -->
@@ -176,11 +157,8 @@
           <button class="btn btn-danger btn-sm" onclick="clearCompose()">Clear</button>
         </div>
       </div>
-      <textarea
-        id="compose-area"
-        class="compose-textarea"
-        placeholder="Your assembled document appears here. Tap '⬇ Dump Queue' to pull in all queued items, or type/paste freely…"
-      ></textarea>
+      <textarea id="compose-area" class="compose-textarea"
+        placeholder="Your assembled document appears here. Tap '⬇ Dump Queue' to pull in all queued items, or type/paste freely…"></textarea>
       <div class="compose-stats" id="compose-stats">0 chars · 0 words</div>
     </section>
 
@@ -188,6 +166,7 @@
     <section class="tab-content" id="view-settings">
       <div class="settings-list">
 
+        <!-- Queue -->
         <div class="settings-section-title">Queue</div>
         <div class="settings-row">
           <span>Auto-clear after Copy All</span>
@@ -215,25 +194,277 @@
         <!-- AI Keys -->
         <div class="settings-section-title">AI Keys</div>
         <div class="settings-ai-info">
-          Your keys are stored only on this device and sent directly to OpenAI. InfinityPaste never sees them.
+          🔒 Keys are stored only on this device and sent directly to each provider. InfinityPaste never sees them.
         </div>
 
-        <div class="settings-key-row">
-          <label class="settings-key-label">OpenAI API Key</label>
-          <div class="settings-key-label" style="font-size:11px;color:var(--muted);margin-bottom:6px;">Used for Whisper transcription &amp; GPT-4o mini summarization</div>
-          <div class="key-input-wrap">
-            <input
-              type="password"
-              id="setting-openai-key"
-              class="key-input"
-              placeholder="sk-..."
-              autocomplete="off"
-              spellcheck="false"
-              oninput="saveApiKey('openai', this.value)"
-            />
-            <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-openai-key', this)" aria-label="Show/hide key">👁️</button>
+        <!-- OpenAI -->
+        <div class="key-provider-card" id="key-card-openai">
+          <div class="key-provider-header" onclick="toggleKeyCard('openai')">
+            <div class="key-provider-left">
+              <span class="key-provider-icon">🤖</span>
+              <div>
+                <div class="key-provider-name">OpenAI</div>
+                <div class="key-provider-models">GPT-4o · Whisper · TTS</div>
+              </div>
+            </div>
+            <div class="key-provider-right">
+              <span class="key-dot" id="dot-openai"></span>
+              <span class="key-chevron" id="chevron-openai">›</span>
+            </div>
           </div>
-          <div class="key-status" id="openai-key-status"></div>
+          <div class="key-provider-body" id="body-openai" style="display:none">
+            <div class="key-provider-tag">🎙️ Voice · ✍️ Summarize · 💬 Chat</div>
+            <div class="key-input-wrap">
+              <input type="password" id="setting-openai-key" class="key-input"
+                placeholder="sk-..." autocomplete="off" spellcheck="false"
+                oninput="saveApiKey('openai', this.value)" />
+              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-openai-key', this)">👁️</button>
+            </div>
+            <div class="key-status" id="openai-key-status"></div>
+          </div>
+        </div>
+
+        <!-- Groq -->
+        <div class="key-provider-card" id="key-card-groq">
+          <div class="key-provider-header" onclick="toggleKeyCard('groq')">
+            <div class="key-provider-left">
+              <span class="key-provider-icon">⚡</span>
+              <div>
+                <div class="key-provider-name">Groq</div>
+                <div class="key-provider-models">Llama 3.3 · Mixtral · Gemma</div>
+              </div>
+            </div>
+            <div class="key-provider-right">
+              <span class="key-dot" id="dot-groq"></span>
+              <span class="key-chevron" id="chevron-groq">›</span>
+            </div>
+          </div>
+          <div class="key-provider-body" id="body-groq" style="display:none">
+            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · ⚡ Ultra-fast inference</div>
+            <div class="key-input-wrap">
+              <input type="password" id="setting-groq-key" class="key-input"
+                placeholder="gsk_..." autocomplete="off" spellcheck="false"
+                oninput="saveApiKey('groq', this.value)" />
+              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-groq-key', this)">👁️</button>
+            </div>
+            <div class="key-status" id="groq-key-status"></div>
+          </div>
+        </div>
+
+        <!-- Google Gemini -->
+        <div class="key-provider-card" id="key-card-gemini">
+          <div class="key-provider-header" onclick="toggleKeyCard('gemini')">
+            <div class="key-provider-left">
+              <span class="key-provider-icon">💎</span>
+              <div>
+                <div class="key-provider-name">Google Gemini</div>
+                <div class="key-provider-models">Gemini 2.0 Flash · 2.5 Pro</div>
+              </div>
+            </div>
+            <div class="key-provider-right">
+              <span class="key-dot" id="dot-gemini"></span>
+              <span class="key-chevron" id="chevron-gemini">›</span>
+            </div>
+          </div>
+          <div class="key-provider-body" id="body-gemini" style="display:none">
+            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · 📄 Long context</div>
+            <div class="key-input-wrap">
+              <input type="password" id="setting-gemini-key" class="key-input"
+                placeholder="AIza..." autocomplete="off" spellcheck="false"
+                oninput="saveApiKey('gemini', this.value)" />
+              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-gemini-key', this)">👁️</button>
+            </div>
+            <div class="key-status" id="gemini-key-status"></div>
+          </div>
+        </div>
+
+        <!-- Anthropic -->
+        <div class="key-provider-card" id="key-card-anthropic">
+          <div class="key-provider-header" onclick="toggleKeyCard('anthropic')">
+            <div class="key-provider-left">
+              <span class="key-provider-icon">🔺</span>
+              <div>
+                <div class="key-provider-name">Anthropic</div>
+                <div class="key-provider-models">Claude 3.5 Sonnet · Claude 3 Haiku</div>
+              </div>
+            </div>
+            <div class="key-provider-right">
+              <span class="key-dot" id="dot-anthropic"></span>
+              <span class="key-chevron" id="chevron-anthropic">›</span>
+            </div>
+          </div>
+          <div class="key-provider-body" id="body-anthropic" style="display:none">
+            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · 📄 Long context</div>
+            <div class="key-input-wrap">
+              <input type="password" id="setting-anthropic-key" class="key-input"
+                placeholder="sk-ant-..." autocomplete="off" spellcheck="false"
+                oninput="saveApiKey('anthropic', this.value)" />
+              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-anthropic-key', this)">👁️</button>
+            </div>
+            <div class="key-status" id="anthropic-key-status"></div>
+          </div>
+        </div>
+
+        <!-- xAI -->
+        <div class="key-provider-card" id="key-card-xai">
+          <div class="key-provider-header" onclick="toggleKeyCard('xai')">
+            <div class="key-provider-left">
+              <span class="key-provider-icon">𝕏</span>
+              <div>
+                <div class="key-provider-name">xAI</div>
+                <div class="key-provider-models">Grok 3 · Grok 3 Mini</div>
+              </div>
+            </div>
+            <div class="key-provider-right">
+              <span class="key-dot" id="dot-xai"></span>
+              <span class="key-chevron" id="chevron-xai">›</span>
+            </div>
+          </div>
+          <div class="key-provider-body" id="body-xai" style="display:none">
+            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · 🌐 Real-time knowledge</div>
+            <div class="key-input-wrap">
+              <input type="password" id="setting-xai-key" class="key-input"
+                placeholder="xai-..." autocomplete="off" spellcheck="false"
+                oninput="saveApiKey('xai', this.value)" />
+              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-xai-key', this)">👁️</button>
+            </div>
+            <div class="key-status" id="xai-key-status"></div>
+          </div>
+        </div>
+
+        <!-- Mistral -->
+        <div class="key-provider-card" id="key-card-mistral">
+          <div class="key-provider-header" onclick="toggleKeyCard('mistral')">
+            <div class="key-provider-left">
+              <span class="key-provider-icon">🌪️</span>
+              <div>
+                <div class="key-provider-name">Mistral</div>
+                <div class="key-provider-models">Mistral Large · Codestral · Nemo</div>
+              </div>
+            </div>
+            <div class="key-provider-right">
+              <span class="key-dot" id="dot-mistral"></span>
+              <span class="key-chevron" id="chevron-mistral">›</span>
+            </div>
+          </div>
+          <div class="key-provider-body" id="body-mistral" style="display:none">
+            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · 💻 Code</div>
+            <div class="key-input-wrap">
+              <input type="password" id="setting-mistral-key" class="key-input"
+                placeholder="..." autocomplete="off" spellcheck="false"
+                oninput="saveApiKey('mistral', this.value)" />
+              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-mistral-key', this)">👁️</button>
+            </div>
+            <div class="key-status" id="mistral-key-status"></div>
+          </div>
+        </div>
+
+        <!-- DeepSeek -->
+        <div class="key-provider-card" id="key-card-deepseek">
+          <div class="key-provider-header" onclick="toggleKeyCard('deepseek')">
+            <div class="key-provider-left">
+              <span class="key-provider-icon">🐋</span>
+              <div>
+                <div class="key-provider-name">DeepSeek</div>
+                <div class="key-provider-models">DeepSeek V3 · R1 Reasoning</div>
+              </div>
+            </div>
+            <div class="key-provider-right">
+              <span class="key-dot" id="dot-deepseek"></span>
+              <span class="key-chevron" id="chevron-deepseek">›</span>
+            </div>
+          </div>
+          <div class="key-provider-body" id="body-deepseek" style="display:none">
+            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · 🔍 Reasoning</div>
+            <div class="key-input-wrap">
+              <input type="password" id="setting-deepseek-key" class="key-input"
+                placeholder="sk-..." autocomplete="off" spellcheck="false"
+                oninput="saveApiKey('deepseek', this.value)" />
+              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-deepseek-key', this)">👁️</button>
+            </div>
+            <div class="key-status" id="deepseek-key-status"></div>
+          </div>
+        </div>
+
+        <!-- Cerebras -->
+        <div class="key-provider-card" id="key-card-cerebras">
+          <div class="key-provider-header" onclick="toggleKeyCard('cerebras')">
+            <div class="key-provider-left">
+              <span class="key-provider-icon">🧠</span>
+              <div>
+                <div class="key-provider-name">Cerebras</div>
+                <div class="key-provider-models">Llama 3.3 70B · Llama 3.1 8B</div>
+              </div>
+            </div>
+            <div class="key-provider-right">
+              <span class="key-dot" id="dot-cerebras"></span>
+              <span class="key-chevron" id="chevron-cerebras">›</span>
+            </div>
+          </div>
+          <div class="key-provider-body" id="body-cerebras" style="display:none">
+            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · ⚡ Ultra-fast inference</div>
+            <div class="key-input-wrap">
+              <input type="password" id="setting-cerebras-key" class="key-input"
+                placeholder="csk-..." autocomplete="off" spellcheck="false"
+                oninput="saveApiKey('cerebras', this.value)" />
+              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-cerebras-key', this)">👁️</button>
+            </div>
+            <div class="key-status" id="cerebras-key-status"></div>
+          </div>
+        </div>
+
+        <!-- Fireworks -->
+        <div class="key-provider-card" id="key-card-fireworks">
+          <div class="key-provider-header" onclick="toggleKeyCard('fireworks')">
+            <div class="key-provider-left">
+              <span class="key-provider-icon">🎆</span>
+              <div>
+                <div class="key-provider-name">Fireworks AI</div>
+                <div class="key-provider-models">Llama 4 · Qwen · DeepSeek-R1</div>
+              </div>
+            </div>
+            <div class="key-provider-right">
+              <span class="key-dot" id="dot-fireworks"></span>
+              <span class="key-chevron" id="chevron-fireworks">›</span>
+            </div>
+          </div>
+          <div class="key-provider-body" id="body-fireworks" style="display:none">
+            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · 🖼️ Image gen</div>
+            <div class="key-input-wrap">
+              <input type="password" id="setting-fireworks-key" class="key-input"
+                placeholder="fw-..." autocomplete="off" spellcheck="false"
+                oninput="saveApiKey('fireworks', this.value)" />
+              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-fireworks-key', this)">👁️</button>
+            </div>
+            <div class="key-status" id="fireworks-key-status"></div>
+          </div>
+        </div>
+
+        <!-- SambaNova -->
+        <div class="key-provider-card" id="key-card-sambanova">
+          <div class="key-provider-header" onclick="toggleKeyCard('sambanova')">
+            <div class="key-provider-left">
+              <span class="key-provider-icon">🔴</span>
+              <div>
+                <div class="key-provider-name">SambaNova</div>
+                <div class="key-provider-models">Llama 4 Scout · DeepSeek-R1</div>
+              </div>
+            </div>
+            <div class="key-provider-right">
+              <span class="key-dot" id="dot-sambanova"></span>
+              <span class="key-chevron" id="chevron-sambanova">›</span>
+            </div>
+          </div>
+          <div class="key-provider-body" id="body-sambanova" style="display:none">
+            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · ⚡ High throughput</div>
+            <div class="key-input-wrap">
+              <input type="password" id="setting-sambanova-key" class="key-input"
+                placeholder="..." autocomplete="off" spellcheck="false"
+                oninput="saveApiKey('sambanova', this.value)" />
+              <button class="key-reveal-btn" onclick="toggleKeyVisibility('setting-sambanova-key', this)">👁️</button>
+            </div>
+            <div class="key-status" id="sambanova-key-status"></div>
+          </div>
         </div>
 
         <!-- Storage -->
@@ -270,7 +501,7 @@
         <div class="settings-section-title">About</div>
         <div class="settings-row">
           <span>Version</span>
-          <span class="settings-value">3.0.0</span>
+          <span class="settings-value">3.1.0</span>
         </div>
         <div class="settings-row" onclick="window.open('https://github.com/nothinginfinity/infinitypaste', '_blank', 'noopener')">
           <span>GitHub</span>
@@ -283,7 +514,6 @@
   </div>
 
   <div id="toast" class="toast"></div>
-
   <script src="app.js"></script>
   <script>
     if ('serviceWorker' in navigator) {
