@@ -1,4 +1,4 @@
-// ─── InfinityPaste v3.3.0 — app.js ───────────────────────────────────────────
+// ─── InfinityPaste v3.3.0 — app.js ──────────────────────────────────────────────
 const STORAGE_KEY  = 'infinitypaste_queue';
 const SETTINGS_KEY = 'infinitypaste_settings';
 const FILES_KEY    = 'infinitypaste_files';
@@ -361,7 +361,7 @@ async function ocrFile(fileId) {
 
 // ─── OCR Phase 2: Analyze OCR text with cheap LLM (Groq or DeepSeek) ─────────
 // Uses OpenAI-compatible chat completions — no vision needed, just text.
-// Priority: Groq (fastest, free tier) → DeepSeek (cheap) → any other keyed provider.
+// Priority: Groq (fastest, free tier) → DeepSeek (cheap) → Mistral → Cerebras
 // OpenAI is NOT used here — save that for Whisper transcription.
 
 const ANALYZE_PROVIDERS = [
@@ -369,7 +369,7 @@ const ANALYZE_PROVIDERS = [
     id:      'groq',
     name:    'Groq',
     url:     'https://api.groq.com/openai/v1/chat/completions',
-    model:   'llama3-8b-8192',
+    model:   'llama-3.1-8b-instant',  // fast, free-tier friendly
     getKey:  () => apiKeys.groq,
   },
   {
