@@ -84,24 +84,25 @@
       <div id="files-list-view">
         <div class="files-toolbar">
           <span class="section-title">My Files</span>
-          <button class="btn btn-primary btn-sm" onclick="document.getElementById('file-upload-input').click()">
-            + Upload
+          <button class="btn btn-primary btn-sm" onclick="triggerUpload()">
+            + Upload Files
           </button>
-          <input
-            id="file-upload-input"
-            type="file"
-            multiple
-            accept="*/*"
-            style="position:absolute; opacity:0; width:1px; height:1px; top:-9999px;"
-            onchange="handleFileUpload(event)"
-          />
         </div>
+
+        <!-- Visible upload zone — tappable area as fallback -->
+        <div class="upload-zone" onclick="triggerUpload()">
+          <div class="upload-zone-icon">📂</div>
+          <div class="upload-zone-text">Tap to upload files</div>
+          <div class="upload-zone-hint">Text, code, markdown, JSON, PDF — any file type</div>
+        </div>
+
+        <!-- Hidden input lives at body level via JS — see app.js -->
+
         <div id="files-list" class="files-list">
-          <div class="queue-empty" id="files-empty">
+          <div class="queue-empty" id="files-empty" style="display:none">
             <div class="empty-icon">📁</div>
             <p>No files yet.</p>
-            <p class="empty-hint">Tap + Upload to add files from your iPhone.</p>
-            <p class="empty-hint">Supports text, code, markdown, PDF, and more.</p>
+            <p class="empty-hint">Tap the upload zone above to get started.</p>
           </div>
         </div>
       </div>
@@ -113,7 +114,7 @@
           <span class="viewer-filename" id="viewer-filename"></span>
           <button class="btn btn-accent btn-sm" onclick="addSelectionToQueue()">+ Add Selection</button>
         </div>
-        <div class="viewer-hint" id="viewer-hint">Select any text below, then tap <strong>+ Add Selection</strong></div>
+        <div class="viewer-hint">Select any text below, then tap <strong>+ Add Selection</strong></div>
         <div
           id="viewer-content"
           class="viewer-content"

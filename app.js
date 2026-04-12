@@ -22,6 +22,7 @@ function init() {
   updateBadge();
   applySettings();
   initCompose();
+  initUploadInput();
 }
 
 // ─── Storage ──────────────────────────────────────────────────────
@@ -92,7 +93,7 @@ function addToQueue(contentOverride, labelOverride, sourceOverride) {
     document.getElementById('collect-label').value = '';
   }
 
-  showToast(`✓ Added to queue (${queue.length} item${queue.length !== 1 ? 's' : ''})`);
+  showToast(`\u2713 Added to queue (${queue.length} item${queue.length !== 1 ? 's' : ''})`);
 }
 
 async function pasteFromClipboard() {
@@ -116,7 +117,7 @@ function copyItem(id) {
   const item = queue.find(i => i.id === id);
   if (!item) return;
   navigator.clipboard.writeText(item.content)
-    .then(() => showToast('✓ Copied'))
+    .then(() => showToast('\u2713 Copied'))
     .catch(() => showToast('Copy failed', 'error'));
 }
 
@@ -124,14 +125,14 @@ function copyAll() {
   if (!queue.length) { showToast('Queue is empty', 'error'); return; }
   const combined = queue.map((item, i) => {
     const header = settings.shownumbers
-      ? `[${i + 1}${item.label ? ` — ${item.label}` : ''}${item.source ? ` · ${item.source}` : ''}]\n`
+      ? `[${i + 1}${item.label ? ` \u2014 ${item.label}` : ''}${item.source ? ` \u00b7 ${item.source}` : ''}]\n`
       : (item.label ? `[${item.label}]\n` : '');
     return header + item.content;
   }).join(settings.separator);
 
   navigator.clipboard.writeText(combined)
     .then(() => {
-      showToast(`✓ Copied ${queue.length} items`);
+      showToast(`\u2713 Copied ${queue.length} items`);
       if (settings.autoclear) setTimeout(() => clearQueue(true), 1500);
     })
     .catch(() => showToast('Copy failed', 'error'));
@@ -143,9 +144,32 @@ function clearQueue(silent = false) {
   if (!silent) showToast('Queue cleared');
 }
 
+// ─── Upload Input (created in JS, appended to body for iOS Safari reliability) ─
+function initUploadInput() {
+  const old = document.getElementById('file-upload-input');
+  if (old) old.remove();
+
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.id = 'file-upload-input';
+  input.multiple = true;
+  input.accept = '*/*';
+  input.style.cssText = 'position:fixed;top:-9999px;left:-9999px;opacity:0;width:1px;height:1px;';
+  input.addEventListener('change', handleFileUpload);
+  document.body.appendChild(input);
+}
+
+function triggerUpload() {
+  const input = document.getElementById('file-upload-input');
+  if (input) {
+    input.value = '';
+    input.click();
+  }
+}
+
 // ─── Files ────────────────────────────────────────────────────────
 async function handleFileUpload(event) {
-  const uploaded = Array.from(event.target.files);
+  const uploaded = Array.from(event.target.files || []);
   if (!uploaded.length) return;
 
   let added = 0;
@@ -169,8 +193,7 @@ async function handleFileUpload(event) {
   saveFiles();
   renderFiles();
   updateStats();
-  event.target.value = '';
-  showToast(`✓ Added ${added} file${added !== 1 ? 's' : ''}`);
+  showToast(`\u2713 Added ${added} file${added !== 1 ? 's' : ''}`);
 }
 
 function readFileContent(file) {
@@ -178,7 +201,7 @@ function readFileContent(file) {
     const isPDF = file.type === 'application/pdf' || file.name.endsWith('.pdf');
 
     if (isPDF) {
-      resolve(`[PDF: ${file.name} — ${formatBytes(file.size)}]\n\nTo extract text from this PDF, open the file viewer and tap "Extract Text". Full PDF text extraction powered by PDF.js.`);
+      resolve(`[PDF: ${file.name} \u2014 ${formatBytes(file.size)}]\n\nTo extract text from this PDF, open the file viewer and tap "Extract Text". Full PDF text extraction powered by PDF.js.`);
       return;
     }
 
@@ -211,10 +234,10 @@ function renderFiles() {
         <span class="file-icon">${fileIcon(file.name)}</span>
         <div class="file-meta">
           <div class="file-name">${escapeHtml(file.name)}</div>
-          <div class="file-size">${formatBytes(file.size || 0)} · ${formatTime(file.added)}</div>
+          <div class="file-size">${formatBytes(file.size || 0)} \u00b7 ${formatTime(file.added)}</div>
         </div>
       </div>
-      <button class="card-btn card-btn--delete" onclick="removeFile(${JSON.stringify(file.id)})">✕</button>
+      <button class="card-btn card-btn--delete" onclick="removeFile(${JSON.stringify(file.id)})">\u2715</button>
     `;
     list.appendChild(row);
   });
@@ -278,7 +301,7 @@ function dumpToCompose() {
 
   const combined = queue.map((item, i) => {
     const header = settings.shownumbers
-      ? `[${i + 1}${item.label ? ` — ${item.label}` : ''}${item.source ? ` · ${item.source}` : ''}]\n`
+      ? `[${i + 1}${item.label ? ` \u2014 ${item.label}` : ''}${item.source ? ` \u00b7 ${item.source}` : ''}]\n`
       : (item.label ? `[${item.label}]\n` : '');
     return header + item.content;
   }).join(settings.separator);
@@ -292,14 +315,14 @@ function dumpToCompose() {
 
   updateComposeStats();
   switchTab('compose');
-  showToast(`✓ Dumped ${queue.length} items to Compose`);
+  showToast(`\u2713 Dumped ${queue.length} items to Compose`);
 }
 
 function copyCompose() {
   const text = document.getElementById('compose-area').value;
   if (!text) { showToast('Compose is empty', 'error'); return; }
   navigator.clipboard.writeText(text)
-    .then(() => showToast('✓ Copied compose doc'))
+    .then(() => showToast('\u2713 Copied compose doc'))
     .catch(() => showToast('Copy failed', 'error'));
 }
 
@@ -326,7 +349,7 @@ function updateComposeStats() {
   const text  = document.getElementById('compose-area').value;
   const chars = text.length;
   const words = text.trim() ? text.trim().split(/\s+/).length : 0;
-  document.getElementById('compose-stats').textContent = `${chars.toLocaleString()} chars · ${words.toLocaleString()} words`;
+  document.getElementById('compose-stats').textContent = `${chars.toLocaleString()} chars \u00b7 ${words.toLocaleString()} words`;
 }
 
 // ─── Tabs ─────────────────────────────────────────────────────────
@@ -375,7 +398,7 @@ function renderQueue() {
     const card = document.createElement('div');
     card.className = 'queue-card';
     const preview = item.content.length > 120
-      ? item.content.slice(0, 120) + '…'
+      ? item.content.slice(0, 120) + '\u2026'
       : item.content;
     const labelHtml = item.label
       ? `<span class="card-label">${escapeHtml(item.label)}</span>` : '';
@@ -389,7 +412,7 @@ function renderQueue() {
         <div class="card-meta">${numHtml}${labelHtml}${sourceHtml}</div>
         <div class="card-actions">
           <button class="card-btn card-btn--copy" onclick="copyItem(${item.id})">Copy</button>
-          <button class="card-btn card-btn--delete" onclick="removeItem(${item.id})">✕</button>
+          <button class="card-btn card-btn--delete" onclick="removeItem(${item.id})">\u2715</button>
         </div>
       </div>
       <div class="card-preview">${escapeHtml(preview)}</div>
@@ -409,7 +432,7 @@ function escapeHtml(str) {
 function formatTime(iso) {
   const d = new Date(iso);
   return d.toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }) +
-    ' · ' + d.toLocaleDateString([], { month:'short', day:'numeric' });
+    ' \u00b7 ' + d.toLocaleDateString([], { month:'short', day:'numeric' });
 }
 
 function formatBytes(bytes) {
@@ -421,11 +444,11 @@ function formatBytes(bytes) {
 function fileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
   const map = {
-    pdf: '📕', md: '📝', txt: '📄', js: '🟨', ts: '🔷',
-    tsx: '⚛️', jsx: '⚛️', json: '📦', css: '🎨', html: '🌐',
-    py: '🐍', swift: '🍎', csv: '📊', xml: '📋', sh: '⚡',
+    pdf: '\ud83d\udcd5', md: '\ud83d\udcdd', txt: '\ud83d\udcc4', js: '\ud83d\udfe8', ts: '\ud83d\udd37',
+    tsx: '\u269b\ufe0f', jsx: '\u269b\ufe0f', json: '\ud83d\udce6', css: '\ud83c\udfa8', html: '\ud83c\udf10',
+    py: '\ud83d\udc0d', swift: '\ud83c\udf4e', csv: '\ud83d\udcca', xml: '\ud83d\udccb', sh: '\u26a1',
   };
-  return map[ext] || '📄';
+  return map[ext] || '\ud83d\udcc4';
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────
