@@ -1,4 +1,4 @@
-// ─── InfinityPaste v3.1 — app.js ──────────────────────────────────────────────
+// ─── InfinityPaste v3.2 — app.js ──────────────────────────────────────────────
 const STORAGE_KEY  = 'infinitypaste_queue';
 const SETTINGS_KEY = 'infinitypaste_settings';
 const FILES_KEY    = 'infinitypaste_files';
@@ -20,6 +20,10 @@ const PROVIDERS = [
   { id: 'fireworks', name: 'Fireworks',    prefix: 'fw-',      minLen: 10 },
   { id: 'sambanova', name: 'SambaNova',    prefix: '',         minLen: 10 },
 ];
+
+// Image MIME types that support OCR
+const IMAGE_TYPES = ['image/png','image/jpeg','image/jpg','image/gif','image/webp','image/bmp','image/tiff'];
+const IMAGE_EXTS  = ['png','jpg','jpeg','gif','webp','bmp','tiff','heic','heif'];
 
 // ─── State ────────────────────────────────────────────────────────────────────
 let queue    = [];
@@ -282,6 +286,101 @@ async function transcribeRecording(id) {
   }
 }
 
+// ─── OCR — Extract text from screenshots / images ────────────────────────────
+function isImageFile(file) {
+  const ext = file.name.split('.').pop().toLowerCase();
+  return IMAGE_TYPES.includes(file.type) || IMAGE_EXTS.includes(ext);
+}
+
+async function ocrFile(fileId) {
+  const file = files.find(f => f.id == fileId);
+  if (!file) return;
+
+  // Require at least one vision-capable key
+  if (!apiKeys.openai && !apiKeys.gemini) {
+    showToast('Add an OpenAI or Gemini key in Settings → AI Keys', 'error');
+    switchTab('settings'); return;
+  }
+
+  const btn = document.getElementById(`ocr-btn-${fileId}`);
+  if (btn) { btn.textContent = '⏳'; btn.disabled = true; }
+
+  try {
+    // file.content is the data URI stored at upload time
+    const dataUri = file.content;
+    if (!dataUri || !dataUri.startsWith('data:')) throw new Error('Image data missing — re-upload the file');
+
+    // Extract base64 payload and MIME type
+    const [meta, b64] = dataUri.split(',');
+    const mimeMatch = meta.match(/data:([^;]+);/);
+    const mimeType  = mimeMatch ? mimeMatch[1] : 'image/png';
+
+    let text = '';
+
+    if (apiKeys.openai) {
+      // GPT-4o vision
+      const res = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKeys.openai}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o',
+          max_tokens: 4096,
+          messages: [{
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: 'Extract ALL text visible in this image exactly as it appears. Preserve formatting, line breaks, and code structure. Output only the extracted text with no commentary.',
+              },
+              {
+                type: 'image_url',
+                image_url: { url: dataUri, detail: 'high' },
+              },
+            ],
+          }],
+        }),
+      });
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || `OpenAI error ${res.status}`); }
+      const data = await res.json();
+      text = data.choices?.[0]?.message?.content?.trim() || '';
+
+    } else if (apiKeys.gemini) {
+      // Gemini Flash vision
+      const res = await fetch(
+        `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKeys.gemini}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{
+              parts: [
+                { text: 'Extract ALL text visible in this image exactly as it appears. Preserve formatting, line breaks, and code structure. Output only the extracted text with no commentary.' },
+                { inline_data: { mime_type: mimeType, data: b64 } },
+              ],
+            }],
+            generationConfig: { maxOutputTokens: 4096 },
+          }),
+        }
+      );
+      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error?.message || `Gemini error ${res.status}`); }
+      const data = await res.json();
+      text = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim() || '';
+    }
+
+    if (!text) throw new Error('No text found in image');
+    addToQueue(text, 'ocr', file.name);
+    switchTab('queue');
+    showToast(`✓ OCR complete — text added to queue`);
+  } catch (e) {
+    showToast(e.message || 'OCR failed', 'error');
+  } finally {
+    if (btn) { btn.textContent = '🔍'; btn.disabled = false; }
+  }
+}
+
 // ─── API Keys ─────────────────────────────────────────────────────────────────
 function loadApiKeys() {
   try {
@@ -489,6 +588,15 @@ async function handleFileUpload(event) {
 function readFileContent(file) {
   return new Promise((resolve, reject) => {
     if (file.name.endsWith('.pdf')) { resolve(`[PDF: ${file.name} — ${formatBytes(file.size)}]`); return; }
+    // Images: store as base64 data URI so OCR can use them later
+    if (isImageFile(file)) {
+      const reader = new FileReader();
+      reader.onload  = e => resolve(e.target.result);  // data:image/png;base64,...
+      reader.onerror = () => reject(new Error('Read failed'));
+      reader.readAsDataURL(file);
+      return;
+    }
+    // Everything else: read as UTF-8 text
     const reader = new FileReader();
     reader.onload  = e => resolve(e.target.result);
     reader.onerror = () => reject(new Error('Read failed'));
@@ -503,6 +611,7 @@ function renderFiles() {
   if (!files.length) { empty.style.display = 'flex'; list.querySelectorAll('.file-row').forEach(el => el.remove()); return; }
   empty.style.display = 'none'; list.innerHTML = ''; list.appendChild(empty);
   files.forEach(file => {
+    const isImg = IMAGE_TYPES.includes(file.type) || IMAGE_EXTS.includes(file.name.split('.').pop().toLowerCase());
     const row = document.createElement('div'); row.className = 'file-row';
     row.innerHTML = `
       <div class="file-row-info" onclick="openFileViewer(${JSON.stringify(file.id)})">
@@ -512,7 +621,10 @@ function renderFiles() {
           <div class="file-size">${formatBytes(file.size || 0)} · ${formatTime(file.added)}</div>
         </div>
       </div>
-      <button class="card-btn card-btn--delete" onclick="removeFile(${JSON.stringify(file.id)})">✕</button>`;
+      <div class="file-row-actions">
+        ${isImg ? `<button class="card-btn card-btn--transcribe" id="ocr-btn-${file.id}" onclick="ocrFile(${JSON.stringify(file.id)})" title="Extract text via OCR">🔍</button>` : ''}
+        <button class="card-btn card-btn--delete" onclick="removeFile(${JSON.stringify(file.id)})">✕</button>
+      </div>`;
     list.appendChild(row);
   });
 }
@@ -524,7 +636,13 @@ function openFileViewer(id) {
   document.getElementById('file-viewer').style.display     = 'flex';
   document.getElementById('viewer-filename').textContent   = file.name;
   const content = document.getElementById('viewer-content');
-  content.textContent = file.content;
+  // For images, show a preview instead of raw base64
+  const isImg = IMAGE_TYPES.includes(file.type) || IMAGE_EXTS.includes(file.name.split('.').pop().toLowerCase());
+  if (isImg && file.content && file.content.startsWith('data:')) {
+    content.innerHTML = `<img src="${file.content}" alt="${escapeHtml(file.name)}" style="max-width:100%;border-radius:8px;" />`;
+  } else {
+    content.textContent = file.content;
+  }
   content.dataset.fileId = id; content.dataset.fileName = file.name;
   const btn = document.getElementById('add-selection-btn');
   if (btn) {
@@ -651,7 +769,7 @@ function formatBytes(b) {
 function formatDuration(s) { return `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`; }
 function fileIcon(name) {
   const ext = name.split('.').pop().toLowerCase();
-  return ({pdf:'📕',md:'📝',txt:'📄',js:'🟨',ts:'🔷',tsx:'⚛️',jsx:'⚛️',json:'📦',css:'🎨',html:'🌐',py:'🐍',swift:'🍎',csv:'📊',xml:'📋',sh:'⚡'})[ext] || '📄';
+  return ({pdf:'📕',md:'📝',txt:'📄',js:'🟨',ts:'🔷',tsx:'⚛️',jsx:'⚛️',json:'📦',css:'🎨',html:'🌐',py:'🐍',swift:'🍎',csv:'📊',xml:'📋',sh:'⚡',png:'🖼️',jpg:'🖼️',jpeg:'🖼️',gif:'🖼️',webp:'🖼️',bmp:'🖼️',tiff:'🖼️',heic:'🖼️',heif:'🖼️'})[ext] || '📄';
 }
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────

@@ -79,7 +79,7 @@
         <div class="upload-zone" onclick="triggerUpload()">
           <div class="upload-zone-icon">📂</div>
           <div class="upload-zone-text">Tap to upload files</div>
-          <div class="upload-zone-hint">Text, code, markdown, JSON, PDF — any file type</div>
+          <div class="upload-zone-hint">Text, code, screenshots, images — any file type · Tap 🔍 on images to OCR</div>
         </div>
         <div id="files-list" class="files-list">
           <div class="queue-empty" id="files-empty" style="display:none">
@@ -213,7 +213,7 @@
             </div>
           </div>
           <div class="key-provider-body" id="body-openai" style="display:none">
-            <div class="key-provider-tag">🎙️ Voice · ✍️ Summarize · 💬 Chat</div>
+            <div class="key-provider-tag">🎙️ Voice · ✍️ Summarize · 💬 Chat · 🔍 OCR screenshots</div>
             <div class="key-input-wrap">
               <input type="password" id="setting-openai-key" class="key-input"
                 placeholder="sk-..." autocomplete="off" spellcheck="false"
@@ -267,7 +267,7 @@
             </div>
           </div>
           <div class="key-provider-body" id="body-gemini" style="display:none">
-            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · 📄 Long context</div>
+            <div class="key-provider-tag">✍️ Summarize · 💬 Chat · 📄 Long context · 🔍 OCR screenshots</div>
             <div class="key-input-wrap">
               <input type="password" id="setting-gemini-key" class="key-input"
                 placeholder="AIza..." autocomplete="off" spellcheck="false"
@@ -501,7 +501,7 @@
         <div class="settings-section-title">About</div>
         <div class="settings-row">
           <span>Version</span>
-          <span class="settings-value">3.1.0</span>
+          <span class="settings-value">3.2.0</span>
         </div>
         <div class="settings-row" onclick="window.open('https://github.com/nothinginfinity/infinitypaste', '_blank', 'noopener')">
           <span>GitHub</span>
