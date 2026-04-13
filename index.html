@@ -72,7 +72,15 @@
       <!-- Queue Tab -->
       <div class="tab-panel tab-panel--active" id="panel-queue">
         <div class="panel-toolbar">
-          <textarea id="text-input" class="text-input" rows="3" placeholder="Type or paste text here…"></textarea>
+          <textarea id="text-input" class="text-input" rows="3" placeholder="Type or paste text here…" oninput="onCollectInput()"></textarea>
+          <div id="fetch-bar" style="display:none;margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <button class="btn btn--primary" onclick="fetchUrl()">🌐 Fetch URL</button>
+            <button class="btn btn--secondary" onclick="saveUrlAsFile()">💾 Save as File</button>
+            <span id="fetch-status" style="font-size:0.8rem;color:var(--color-text-muted)"></span>
+          </div>
+          <div id="autotitle-bar" style="margin-top:6px;font-size:0.8rem;color:var(--color-text-muted);display:none;">
+            ✨ <span id="autotitle-suggestion"></span>
+          </div>
           <div class="toolbar-actions">
             <button class="btn btn-primary btn-sm" onclick="submitText()">Add</button>
             <button class="btn btn-danger btn-sm" onclick="clearQueue()">🗑 Clear</button>
@@ -159,6 +167,11 @@
         <div class="setting-row" style="gap:8px">
           <button class="btn btn-secondary btn-sm" onclick="exportData()">⬆️ Export</button>
           <label class="btn btn-secondary btn-sm">⬇️ Import<input type="file" accept=".json" onchange="importData(this)" style="display:none"></label>
+        </div>
+        <div class="setting-row">
+          <label>Safari Bookmarklet</label>
+          <button class="btn btn--secondary" onclick="generateBookmarklet()">Generate Bookmarklet</button>
+          <div id="bookmarklet-output" style="margin-top:8px;display:none;word-break:break-all;font-size:0.75rem;background:var(--color-surface-offset);padding:8px;border-radius:6px;"></div>
         </div>
       </div>
       <div class="modal-footer">
