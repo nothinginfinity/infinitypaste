@@ -84,6 +84,10 @@ function idbFileGetAll() {
   });
 }
 
+// ─── ID generation (integer, safe for HTML onclick attrs) ─────────────────────
+let _idCounter = Date.now();
+function newId() { return ++_idCounter; }
+
 // ─── State ────────────────────────────────────────────────────────────────────
 let queue = [];
 let recordings = [];
@@ -143,7 +147,7 @@ function refreshKeyStatus(provider) {
   const dot = document.getElementById(`key-dot-${provider}`);
   const txt = document.getElementById(`key-status-${provider}`);
   const has = !!(settings.apiKeys && settings.apiKeys[provider]);
-  if (dot) { dot.style.background = has ? 'var(--color-success,#437a22)' : 'var(--color-border,#ccc)'; }
+  if (dot) { dot.style.background = has ? 'var(--success,#22c55e)' : 'var(--border,#2a2a2a)'; }
   if (txt) txt.textContent = has ? 'Saved' : '';
 }
 function toggleKeyCard(provider) {
@@ -170,7 +174,8 @@ function showToast(message, type = 'success') {
   const el = document.getElementById('toast');
   if (!el) return;
   el.textContent = message;
-  el.className = `toast toast--${type} toast--visible`;
+  // CSS uses toast--show (not toast--visible)
+  el.className = `toast toast--show${type === 'error' ? ' toast--error' : ''}`;
   clearTimeout(el._timer);
   el._timer = setTimeout(() => { el.className = 'toast'; }, 2800);
 }
@@ -208,11 +213,13 @@ function addToQueue(content, label, source) {
     inputEl.value = '';
     labelEl.value = '';
     _labelManual = false;
-    document.getElementById('fetch-bar').style.display = 'none';
-    document.getElementById('autotitle-badge').style.display = 'none';
+    const fetchBar = document.getElementById('fetch-bar');
+    if (fetchBar) fetchBar.style.display = 'none';
+    const badge = document.getElementById('autotitle-badge');
+    if (badge) badge.style.display = 'none';
   }
   const item = {
-    id: Date.now() + Math.random(),
+    id: newId(),  // integer ID — safe in onclick attrs
     content: content || '',
     label: label || '',
     source: source || '',
@@ -228,6 +235,7 @@ function addToQueue(content, label, source) {
 }
 
 function removeItem(id) {
+  id = Number(id);
   queue = queue.filter(i => i.id !== id);
   saveQueue();
   renderQueue();
@@ -245,6 +253,7 @@ function clearQueue(skipConfirm) {
 }
 
 function copyItem(id) {
+  id = Number(id);
   const item = queue.find(i => i.id === id);
   if (!item) return;
   navigator.clipboard.writeText(item.content)
@@ -425,7 +434,6 @@ async function fetchUrl() {
     const text = (tmp.innerText || tmp.textContent || '').replace(/\s{3,}/g, '\n\n').trim();
     if (!text) throw new Error('No readable text found');
     const hostname = (() => { try { return new URL(url).hostname; } catch { return url; } })();
-    // Use page title if available
     const titleMatch = raw.match(/<title[^>]*>([^<]+)<\/title>/i);
     const label = (titleMatch ? titleMatch[1].trim() : hostname);
     if (labelEl && !_labelManual) labelEl.value = label;
@@ -448,7 +456,7 @@ async function saveCurrentAsFile() {
   if (!content) { showToast('Nothing to save', 'error'); return; }
   const name = (labelEl?.value?.trim() || 'saved-' + Date.now()) + '.txt';
   const blob = new Blob([content], { type: 'text/plain' });
-  const id = Date.now() + Math.random();
+  const id = newId();
   await idbFilePut({ id, name, type: blob.type, size: blob.size, timestamp: new Date().toISOString(), blob });
   files.push({ id, name, type: blob.type, size: blob.size, timestamp: new Date().toISOString() });
   renderFiles();
@@ -481,7 +489,8 @@ async function startRecording() {
     if (btn) btn.classList.add('recording');
     if (icon) icon.textContent = '⏹️';
     if (status) status.textContent = 'Recording…';
-    document.getElementById('record-waveform')?.classList.add('active');
+    // CSS class is record-waveform--active
+    document.getElementById('record-waveform')?.classList.add('record-waveform--active');
     showToast('Recording started');
   } catch {
     showToast('Microphone access denied', 'error');
@@ -508,13 +517,14 @@ function stopRecording() {
   if (btn) btn.classList.remove('recording');
   if (icon) icon.textContent = '🎙️';
   if (status) status.textContent = 'Tap to record';
-  document.getElementById('record-waveform')?.classList.remove('active');
+  // CSS class is record-waveform--active
+  document.getElementById('record-waveform')?.classList.remove('record-waveform--active');
 }
 
 async function saveRecording() {
   const blob = new Blob(audioChunks, { type: 'audio/webm' });
   const name = `Recording ${new Date().toLocaleString()}`;
-  const id = Date.now();
+  const id = newId();
   await idbPut({ id, name, blob, timestamp: new Date().toISOString(), duration: recordingSeconds });
   recordings = await idbGetAll();
   renderRecordings();
@@ -522,6 +532,7 @@ async function saveRecording() {
 }
 
 async function deleteRecording(id) {
+  id = Number(id);
   await idbDelete(id);
   recordings = await idbGetAll();
   renderRecordings();
@@ -538,6 +549,7 @@ async function clearAllRecordings() {
 }
 
 function playRecording(id) {
+  id = Number(id);
   const rec = recordings.find(r => r.id === id);
   if (!rec?.blob) return;
   if (currentlyPlaying) { currentlyPlaying.pause(); currentlyPlaying = null; }
@@ -552,6 +564,7 @@ function playRecording(id) {
 }
 
 async function transcribeRecording(id) {
+  id = Number(id);
   const key = settings.apiKeys?.openai;
   if (!key) { showToast('OpenAI key required in Settings → AI Keys', 'error'); return; }
   const btn = document.getElementById(`transcribe-btn-${id}`);
@@ -599,7 +612,7 @@ function renderRecordings() {
         <button class="card-btn" onclick="localTranscribeRecording(${rec.id})" id="local-transcribe-btn-${rec.id}" title="Transcribe locally">🧠</button>
         <button class="card-btn btn-danger" onclick="deleteRecording(${rec.id})">✕</button>
       </div>
-      <div id="local-progress-${rec.id}" style="display:none;font-size:0.75rem;color:var(--color-text-muted);padding:4px 0"></div>
+      <div id="local-progress-${rec.id}" style="display:none;font-size:0.75rem;color:var(--text-muted);padding:4px 0"></div>
       <audio id="audio-${rec.id}" style="display:none;width:100%;margin-top:8px" controls></audio>
     </div>`;
   });
@@ -628,7 +641,7 @@ async function handleFileUpload(input) {
   const fileList = input.files;
   if (!fileList?.length) return;
   for (const f of fileList) {
-    const id = Date.now() + Math.random();
+    const id = newId();
     const record = { id, name: f.name, type: f.type, size: f.size, timestamp: new Date().toISOString(), blob: f };
     await idbFilePut(record);
     files.push({ id, name: f.name, type: f.type, size: f.size, timestamp: record.timestamp });
@@ -639,6 +652,7 @@ async function handleFileUpload(input) {
 }
 
 async function deleteFile(id) {
+  id = Number(id);
   await idbFileDelete(id);
   files = files.filter(f => f.id !== id);
   renderFiles();
@@ -685,7 +699,8 @@ function renderFiles() {
 
 // ─── File Viewer ──────────────────────────────────────────────────────────────
 async function viewFile(id) {
-  const file = files.find(f => f.id == id);
+  id = Number(id);
+  const file = files.find(f => f.id === id);
   if (!file) return;
   const stored = await idbFileGet(id);
   if (!stored?.blob) return;
@@ -773,7 +788,6 @@ function refreshSettingsStats() {
       s.textContent = bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes/1024).toFixed(1)} KB` : `${(bytes/1048576).toFixed(1)} MB`;
     } catch { s.textContent = '—'; }
   }
-  // Refresh key status dots
   ['openai','groq','gemini','anthropic','xai','mistral','deepseek','cerebras','fireworks','sambanova'].forEach(p => refreshKeyStatus(p));
 }
 
@@ -782,7 +796,6 @@ function generateBookmarklet() {
   const area = document.getElementById('bookmarklet-area');
   const urlEl = document.getElementById('bookmarklet-url');
   if (!area || !urlEl) return;
-  const appUrl = window.location.origin + window.location.pathname;
   const code = `javascript:(function(){var t=document.title;var u=location.href;var body=document.body.innerText||'';var text='['+t+']\\n'+u+'\\n\\n'+body.slice(0,8000);if(navigator.clipboard){navigator.clipboard.writeText(text).then(function(){alert('Page text copied! Open InfinityPaste and paste (Ctrl+V or the Paste button).')});}else{prompt('Copy this:',text);}})();`;
   urlEl.value = code;
   area.style.display = 'flex';
@@ -815,7 +828,8 @@ async function _getTesseractWorker() {
 }
 
 async function ocrFile(id) {
-  const file = files.find(f => f.id == id);
+  id = Number(id);
+  const file = files.find(f => f.id === id);
   if (!file) return;
   const btn = document.getElementById(`ocr-btn-${id}`);
   if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
@@ -864,7 +878,8 @@ async function extractPdfText(blob) {
 }
 
 async function extractPdfToQueue(id) {
-  const file = files.find(f => f.id == id);
+  id = Number(id);
+  const file = files.find(f => f.id === id);
   if (!file) return;
   const btn = document.getElementById(`pdf-btn-${id}`);
   if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
@@ -898,7 +913,8 @@ function _loadJsQR() {
 }
 
 async function readQRFromFile(fileId) {
-  const file = files.find(f => f.id == fileId);
+  fileId = Number(fileId);
+  const file = files.find(f => f.id === fileId);
   if (!file) return;
   const btn = document.getElementById(`qr-btn-${fileId}`);
   if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
@@ -937,7 +953,8 @@ function _loadImageEl(src) {
 
 // ─── AI Analyze ───────────────────────────────────────────────────────────────
 async function analyzeFile(id) {
-  const file = files.find(f => f.id == id);
+  id = Number(id);
+  const file = files.find(f => f.id === id);
   if (!file) return;
   const key = settings.apiKeys?.openai;
   if (!key) { showToast('OpenAI key required in Settings → AI Keys', 'error'); return; }
@@ -989,7 +1006,8 @@ async function analyzeFile(id) {
 
 // ─── Code Extractor ───────────────────────────────────────────────────────────
 async function extractCodeFromFile(fileId) {
-  const file = files.find(f => f.id == fileId);
+  fileId = Number(fileId);
+  const file = files.find(f => f.id === fileId);
   if (!file) return;
   const btn = document.getElementById(`code-btn-${fileId}`);
   if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
@@ -1076,6 +1094,7 @@ async function _getWhisperPipeline(progressCb) {
 }
 
 async function localTranscribeRecording(id) {
+  id = Number(id);
   const btn = document.getElementById(`local-transcribe-btn-${id}`);
   const progressEl = document.getElementById(`local-progress-${id}`);
   if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
@@ -1120,6 +1139,7 @@ function _tfidfKeywords(text, count = 10) {
 }
 
 function extractKeywords(id) {
+  id = Number(id);
   const item = queue.find(i => i.id === id);
   if (!item) return;
   const keywords = _tfidfKeywords(item.content, 10);
@@ -1141,6 +1161,7 @@ function _loadFranc() {
 const ISO_LANG = { eng:'English',spa:'Spanish',fra:'French',deu:'German',ita:'Italian',por:'Portuguese',rus:'Russian',zho:'Chinese',jpn:'Japanese',kor:'Korean',ara:'Arabic',hin:'Hindi' };
 
 async function detectLang(id) {
+  id = Number(id);
   const item = queue.find(i => i.id === id);
   if (!item) return;
   showToast('Detecting language…');
@@ -1176,6 +1197,7 @@ function _loadCompromise() {
 }
 
 async function cleanupItem(id) {
+  id = Number(id);
   const item = queue.find(i => i.id === id);
   if (!item) return;
   showToast('Cleaning up text…');
