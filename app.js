@@ -1,1 +1,1 @@
-$(cat ~/app-phase-4.js)
+$(cat /home/user/app-phase-4.js)
