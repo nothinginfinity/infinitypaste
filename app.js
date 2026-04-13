@@ -1,11 +1,11 @@
-// ─── InfinityPaste v5.0.1 — app.js ──────────────────────────────────────────────
-// Phase 5: hOCR Table OCR, QR Code Reader, Multi-page Table Stitcher, Code Block Extractor, Receipt Parser
-const STATE_VERSION = 4;
+// ─── InfinityPaste app.js — fully wired to index.html ────────────────────────
+// Matches: collect-input, collect-label, view-*, tab-*, record-btn, etc.
+
+// ─── IndexedDB ────────────────────────────────────────────────────────────────
 const DB_NAME = 'infinitypaste-db';
 const DB_VERSION = 3;
 let db = null;
 
-// ─── IndexedDB Setup ──────────────────────────────────────────────────────────
 function openDB() {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -27,7 +27,6 @@ function idbGet(id) {
     req.onerror = () => reject(req.error);
   });
 }
-
 function idbPut(record) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('recordings', 'readwrite');
@@ -36,7 +35,6 @@ function idbPut(record) {
     req.onerror = () => reject(req.error);
   });
 }
-
 function idbDelete(id) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('recordings', 'readwrite');
@@ -45,7 +43,6 @@ function idbDelete(id) {
     req.onerror = () => reject(req.error);
   });
 }
-
 function idbGetAll() {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('recordings', 'readonly');
@@ -54,9 +51,6 @@ function idbGetAll() {
     req.onerror = () => reject(req.error);
   });
 }
-
-// FIX #5: store full record {id, name, type, size, timestamp, blob} so metadata
-// survives page reload — previously only blob was stored, losing name/type/size.
 function idbFilePut(record) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('files', 'readwrite');
@@ -65,7 +59,6 @@ function idbFilePut(record) {
     req.onerror = () => reject(req.error);
   });
 }
-
 function idbFileGet(id) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('files', 'readonly');
@@ -74,7 +67,6 @@ function idbFileGet(id) {
     req.onerror = () => reject(req.error);
   });
 }
-
 function idbFileDelete(id) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('files', 'readwrite');
@@ -83,7 +75,6 @@ function idbFileDelete(id) {
     req.onerror = () => reject(req.error);
   });
 }
-
 function idbFileGetAll() {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('files', 'readonly');
@@ -97,104 +88,142 @@ function idbFileGetAll() {
 let queue = [];
 let recordings = [];
 let files = [];
-let activeTab = 'queue';
+let activeTab = 'collect';
 let mediaRecorder = null;
 let audioChunks = [];
 let isRecording = false;
 let recordingTimer = null;
 let recordingSeconds = 0;
 let currentlyPlaying = null;
+let _searchTerm = '';
+let _sortOrder = 'newest';
+let _labelManual = false;
+let _autoTitleTimer = null;
+
+const SETTINGS_KEY = 'infinitypaste-settings';
+const QUEUE_KEY = 'infinitypaste-queue';
+
 let settings = {
-  openaiKey: '',
-  openaiModel: 'gpt-4o',
-  theme: 'auto',
-  fontSize: 'medium',
-  autoSave: true,
-  showTimestamps: true,
-  maxQueueItems: 100
+  autoclear: false,
+  shownumbers: true,
+  separator: '\n\n---\n\n',
+  apiKeys: {}
 };
 
 function loadSettings() {
   try {
-    const s = localStorage.getItem('infinitypaste-settings');
+    const s = localStorage.getItem(SETTINGS_KEY);
     if (s) settings = { ...settings, ...JSON.parse(s) };
+    if (!settings.apiKeys) settings.apiKeys = {};
   } catch {}
 }
-
 function saveSettings() {
-  try { localStorage.setItem('infinitypaste-settings', JSON.stringify(settings)); } catch {}
+  try { localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings)); } catch {}
+}
+function saveSetting(key, value) {
+  settings[key] = value;
+  saveSettings();
+}
+function saveApiKey(provider, value) {
+  value = (value || '').trim();
+  if (!value) { showToast('Key is empty', 'error'); return; }
+  settings.apiKeys[provider] = value;
+  saveSettings();
+  refreshKeyStatus(provider);
+  showToast(`${provider} key saved`);
+}
+function deleteApiKey(provider) {
+  delete settings.apiKeys[provider];
+  saveSettings();
+  refreshKeyStatus(provider);
+  document.getElementById(`key-input-${provider}`).value = '';
+  showToast(`${provider} key removed`);
+}
+function refreshKeyStatus(provider) {
+  const dot = document.getElementById(`key-dot-${provider}`);
+  const txt = document.getElementById(`key-status-${provider}`);
+  const has = !!(settings.apiKeys && settings.apiKeys[provider]);
+  if (dot) { dot.style.background = has ? 'var(--color-success,#437a22)' : 'var(--color-border,#ccc)'; }
+  if (txt) txt.textContent = has ? 'Saved' : '';
+}
+function toggleKeyCard(provider) {
+  const body = document.getElementById(`key-body-${provider}`);
+  const input = document.getElementById(`key-input-${provider}`);
+  if (!body) return;
+  const open = body.style.display !== 'none';
+  body.style.display = open ? 'none' : 'block';
+  if (!open && input && settings.apiKeys[provider]) input.value = settings.apiKeys[provider];
 }
 
 function loadQueue() {
   try {
-    const q = localStorage.getItem('infinitypaste-queue');
+    const q = localStorage.getItem(QUEUE_KEY);
     if (q) queue = JSON.parse(q);
   } catch { queue = []; }
 }
-
 function saveQueue() {
-  try { localStorage.setItem('infinitypaste-queue', JSON.stringify(queue)); } catch {}
-}
-
-// ─── Theme ────────────────────────────────────────────────────────────────────
-function applyTheme(theme) {
-  const root = document.documentElement;
-  if (theme === 'auto') {
-    root.removeAttribute('data-theme');
-  } else {
-    root.setAttribute('data-theme', theme);
-  }
+  try { localStorage.setItem(QUEUE_KEY, JSON.stringify(queue)); } catch {}
 }
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 function showToast(message, type = 'success') {
-  const container = document.getElementById('toast-container');
-  if (!container) return;
-  const toast = document.createElement('div');
-  toast.className = `toast toast--${type}`;
-  toast.textContent = message;
-  container.appendChild(toast);
-  requestAnimationFrame(() => toast.classList.add('toast--visible'));
-  setTimeout(() => {
-    toast.classList.remove('toast--visible');
-    setTimeout(() => toast.remove(), 300);
-  }, 3000);
+  const el = document.getElementById('toast');
+  if (!el) return;
+  el.textContent = message;
+  el.className = `toast toast--${type} toast--visible`;
+  clearTimeout(el._timer);
+  el._timer = setTimeout(() => { el.className = 'toast'; }, 2800);
 }
 
-// ─── Tab Switching ────────────────────────────────────────────────────────────
+// ─── Tabs ─────────────────────────────────────────────────────────────────────
 function switchTab(tab) {
   activeTab = tab;
-  document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.classList.toggle('tab-btn--active', btn.dataset.tab === tab);
+  document.querySelectorAll('.tab').forEach(btn => {
+    btn.classList.toggle('active', btn.id === `tab-${tab}`);
   });
-  document.querySelectorAll('.tab-panel').forEach(panel => {
-    panel.classList.toggle('tab-panel--active', panel.id === `panel-${tab}`);
+  document.querySelectorAll('.tab-content').forEach(panel => {
+    panel.classList.toggle('active', panel.id === `view-${tab}`);
   });
+  if (tab === 'settings') refreshSettingsStats();
 }
 
-// ─── Escape HTML ─────────────────────────────────────────────────────────────
+// ─── Escape HTML ──────────────────────────────────────────────────────────────
 function escapeHtml(str) {
   return String(str)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 // ─── Queue ────────────────────────────────────────────────────────────────────
-function addToQueue(content, label = '', source = '') {
+function addToQueue(content, label, source) {
+  // Called either from button onclick (no args) or programmatically (with args)
+  if (content === undefined || typeof content === 'object') {
+    // Called from button — read from inputs
+    const inputEl = document.getElementById('collect-input');
+    const labelEl = document.getElementById('collect-label');
+    content = inputEl ? inputEl.value.trim() : '';
+    label = labelEl ? labelEl.value.trim() : '';
+    source = 'manual';
+    if (!content) { showToast('Nothing to add', 'error'); return; }
+    inputEl.value = '';
+    labelEl.value = '';
+    _labelManual = false;
+    document.getElementById('fetch-bar').style.display = 'none';
+    document.getElementById('autotitle-badge').style.display = 'none';
+  }
   const item = {
     id: Date.now() + Math.random(),
-    content,
-    label,
-    source,
+    content: content || '',
+    label: label || '',
+    source: source || '',
     timestamp: new Date().toISOString()
   };
   queue.unshift(item);
-  if (queue.length > settings.maxQueueItems) queue = queue.slice(0, settings.maxQueueItems);
   saveQueue();
   renderQueue();
+  updateBadge();
+  switchTab('queue');
+  showToast('Added to queue');
   return item;
 }
 
@@ -202,77 +231,114 @@ function removeItem(id) {
   queue = queue.filter(i => i.id !== id);
   saveQueue();
   renderQueue();
+  updateBadge();
 }
 
-function clearQueue() {
+function clearQueue(skipConfirm) {
   if (!queue.length) return;
-  if (!confirm('Clear all queue items?')) return;
+  if (!skipConfirm && !confirm('Clear all queue items?')) return;
   queue = [];
   saveQueue();
   renderQueue();
+  updateBadge();
+  showToast('Queue cleared');
 }
 
 function copyItem(id) {
   const item = queue.find(i => i.id === id);
   if (!item) return;
-  navigator.clipboard.writeText(item.content).then(() => showToast('Copied!')).catch(() => showToast('Copy failed', 'error'));
+  navigator.clipboard.writeText(item.content)
+    .then(() => showToast('Copied!'))
+    .catch(() => showToast('Copy failed', 'error'));
+}
+
+function copyAll() {
+  if (!queue.length) { showToast('Queue is empty', 'error'); return; }
+  const text = queue.map(i => i.content).join(settings.separator || '\n\n---\n\n');
+  navigator.clipboard.writeText(text)
+    .then(() => {
+      showToast('All copied!');
+      if (settings.autoclear) { queue = []; saveQueue(); renderQueue(); updateBadge(); }
+    })
+    .catch(() => showToast('Copy failed', 'error'));
+}
+
+function dumpToCompose() {
+  if (!queue.length) { showToast('Queue is empty', 'error'); return; }
+  const text = queue.map(i => i.content).join(settings.separator || '\n\n---\n\n');
+  const area = document.getElementById('compose-area');
+  if (!area) return;
+  area.value = (area.value ? area.value + '\n\n' : '') + text;
+  updateComposeStats();
+  switchTab('compose');
+}
+
+function updateBadge() {
+  const badge = document.getElementById('queue-badge');
+  const count = document.getElementById('badge-count');
+  if (!badge || !count) return;
+  if (queue.length > 0) {
+    badge.style.display = 'inline-flex';
+    count.textContent = queue.length;
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+function onQueueSearch() {
+  _searchTerm = (document.getElementById('queue-search')?.value || '').toLowerCase();
+  renderQueue();
+}
+
+function onQueueSort() {
+  _sortOrder = document.getElementById('queue-sort')?.value || 'newest';
+  renderQueue();
 }
 
 function renderQueue() {
   const el = document.getElementById('queue-list');
+  const emptyEl = document.getElementById('queue-empty');
   if (!el) return;
-  if (!queue.length) {
-    el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📋</div><p>Queue is empty</p></div>';
-    return;
-  }
-  el.innerHTML = queue.map(item => {
-    const preview = item.content.length > 120 ? item.content.slice(0, 120) + '…' : item.content;
+
+  let items = [...queue];
+  if (_searchTerm) items = items.filter(i =>
+    i.content.toLowerCase().includes(_searchTerm) ||
+    i.label.toLowerCase().includes(_searchTerm) ||
+    i.source.toLowerCase().includes(_searchTerm)
+  );
+  if (_sortOrder === 'oldest') items.reverse();
+  else if (_sortOrder === 'label') items.sort((a,b) => a.label.localeCompare(b.label));
+  else if (_sortOrder === 'source') items.sort((a,b) => a.source.localeCompare(b.source));
+
+  if (emptyEl) emptyEl.style.display = items.length ? 'none' : 'flex';
+
+  const cards = items.map((item, idx) => {
+    const preview = item.content.length > 140 ? item.content.slice(0, 140) + '…' : item.content;
     const wordCount = item.content.trim().split(/\s+/).filter(Boolean).length;
-    return `<div class="card" id="queue-item-${item.id}">
-      <div class="card-meta">
-        ${item.label ? `<span class="card-label">${escapeHtml(item.label)}</span>` : ''}
-        ${item.source ? `<span class="card-source">${escapeHtml(item.source)}</span>` : ''}
-        <span class="card-count">${wordCount}w</span>
-        ${settings.showTimestamps ? `<span class="card-time">${new Date(item.timestamp).toLocaleTimeString()}</span>` : ''}
+    const num = settings.shownumbers ? `<span class="card-num">${queue.indexOf(item) + 1}</span>` : '';
+    return `<div class="queue-card" id="qcard-${item.id}">
+      <div class="card-header">
+        ${num}
+        <span class="card-label">${escapeHtml(item.label || item.source || 'item')}</span>
+        <span class="card-meta">${wordCount}w · ${new Date(item.timestamp).toLocaleTimeString()}</span>
       </div>
       <div class="card-preview">${escapeHtml(preview)}</div>
       <div class="card-actions">
-        <button class="card-btn card-btn--copy" onclick="copyItem(${item.id})" title="Copy">📋</button>
-        <button class="card-btn" onclick="extractKeywordsFromQueueItem(${item.id})" title="Extract TF-IDF keywords">🔑</button>
-        ${ item.content.trim().split(/\s+/).length >= 80 ? `<button class="card-btn" id="summarize-btn-${item.id}" onclick="localSummarizeQueueItem(${item.id})" title="Summarize locally">📋</button>` : '' }
-        <button class="card-btn" id="cleanup-btn-${item.id}" onclick="cleanupQueueItem(${item.id})" title="Clean up text">✨</button>
-        <button class="card-btn" id="lang-btn-${item.id}" onclick="detectLanguageOfItem(${item.id})" title="Detect language">🌐</button>
-        <button class="card-btn card-btn--delete" onclick="removeItem(${item.id})">✕</button>
+        <button class="card-btn" onclick="copyItem(${item.id})" title="Copy">📋</button>
+        <button class="card-btn" onclick="extractKeywords(${item.id})" title="Keywords">🔑</button>
+        <button class="card-btn" onclick="cleanupItem(${item.id})" title="Clean up">✨</button>
+        <button class="card-btn" onclick="detectLang(${item.id})" title="Detect language">🌐</button>
+        <button class="card-btn btn-danger" onclick="removeItem(${item.id})" title="Delete">✕</button>
       </div>
-      <div id="summarize-progress-${item.id}" style="display:none;font-size:0.75rem;color:var(--color-text-muted);padding:4px 0 0 0;"></div>
     </div>`;
-  }).join('');
+  });
+  // Keep the empty state element, replace everything else
+  const existing = el.querySelectorAll('.queue-card');
+  existing.forEach(n => n.remove());
+  el.insertAdjacentHTML('beforeend', cards.join(''));
 }
 
-// ─── Clipboard Paste ──────────────────────────────────────────────────────────
-async function pasteFromClipboard() {
-  try {
-    const text = await navigator.clipboard.readText();
-    if (!text.trim()) { showToast('Clipboard is empty', 'error'); return; }
-    addToQueue(text, '', 'clipboard');
-    switchTab('queue');
-    showToast('Pasted from clipboard');
-  } catch {
-    showToast('Clipboard access denied', 'error');
-  }
-}
-
-document.addEventListener('paste', e => {
-  const text = e.clipboardData?.getData('text');
-  if (text?.trim()) {
-    addToQueue(text, '', 'paste');
-    switchTab('queue');
-    showToast('Pasted!');
-  }
-});
-
-// ─── Text Input + URL Detection ───────────────────────────────────────────────
-// FIX #1: onCollectInput was missing entirely — called on every keystroke from index.html
+// ─── Collect Tab ──────────────────────────────────────────────────────────────
 const URL_RE = /https?:\/\/[^\s"'<>)]{4,}/i;
 
 function _extractUrl(text) {
@@ -281,108 +347,121 @@ function _extractUrl(text) {
 }
 
 function onCollectInput() {
-  const el = document.getElementById('text-input');
+  const el = document.getElementById('collect-input');
   const fetchBar = document.getElementById('fetch-bar');
-  const autotitleBar = document.getElementById('autotitle-bar');
-  const autotitleSuggestion = document.getElementById('autotitle-suggestion');
   if (!el || !fetchBar) return;
+  const url = _extractUrl(el.value);
+  fetchBar.style.display = url ? 'flex' : 'none';
+  if (!_labelManual) _scheduleAutoTitle(el.value, url);
+}
 
-  const val = el.value;
-  const url = _extractUrl(val);
+function onLabelInput() {
+  _labelManual = true;
+  clearTimeout(_autoTitleTimer);
+  document.getElementById('autotitle-badge').style.display = 'none';
+}
 
-  if (url) {
-    fetchBar.style.display = 'flex';
-    if (autotitleBar && autotitleSuggestion) {
-      try {
-        const hostname = new URL(url).hostname.replace(/^www\./, '');
-        autotitleSuggestion.textContent = `Suggested label: ${hostname}`;
-        autotitleBar.style.display = 'block';
-      } catch {
-        autotitleBar.style.display = 'none';
+function _scheduleAutoTitle(text, url) {
+  clearTimeout(_autoTitleTimer);
+  _autoTitleTimer = setTimeout(() => {
+    let suggested = '';
+    if (url) {
+      try { suggested = new URL(url).hostname.replace(/^www\./, ''); } catch {}
+    } else if (text.trim()) {
+      const firstLine = text.split('\n')[0].trim();
+      suggested = firstLine.length <= 60 ? firstLine : _tfidfKeywords(text, 3).map(k => k.word).join(', ');
+    }
+    if (suggested) {
+      const labelEl = document.getElementById('collect-label');
+      const badge = document.getElementById('autotitle-badge');
+      if (labelEl && !_labelManual) {
+        labelEl.value = suggested;
+        if (badge) badge.style.display = 'inline-block';
       }
     }
-  } else {
-    fetchBar.style.display = 'none';
-    if (autotitleBar) autotitleBar.style.display = 'none';
+  }, 800);
+}
+
+async function pasteFromClipboard() {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!text.trim()) { showToast('Clipboard is empty', 'error'); return; }
+    const inputEl = document.getElementById('collect-input');
+    if (inputEl) { inputEl.value = text; onCollectInput(); }
+    showToast('Pasted!');
+  } catch {
+    showToast('Clipboard access denied — paste manually', 'error');
   }
 }
 
-// FIX #2: fetchUrl was missing — called by "🌐 Fetch URL" button in #fetch-bar
+// Global paste shortcut
+document.addEventListener('paste', e => {
+  const focused = document.activeElement;
+  if (focused && (focused.tagName === 'TEXTAREA' || focused.tagName === 'INPUT')) return;
+  const text = e.clipboardData?.getData('text');
+  if (text?.trim()) {
+    addToQueue(text, '', 'paste');
+    showToast('Pasted to queue!');
+  }
+});
+
 async function fetchUrl() {
-  const el = document.getElementById('text-input');
-  const statusEl = document.getElementById('fetch-status');
+  const el = document.getElementById('collect-input');
+  const labelEl = document.getElementById('collect-label');
   if (!el) return;
   const url = _extractUrl(el.value);
   if (!url) { showToast('No URL detected', 'error'); return; }
-  if (statusEl) statusEl.textContent = 'Fetching…';
-  showToast('Fetching URL…');
+  showToast('Fetching…');
+  document.getElementById('fetch-btn').disabled = true;
   try {
-    // Use allorigins CORS proxy for cross-origin fetches in PWA context
     const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
     const resp = await fetch(proxy);
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const json = await resp.json();
     const raw = json.contents || '';
-    // Strip HTML tags for plain text
     const tmp = document.createElement('div');
     tmp.innerHTML = raw;
-    // Remove script/style nodes
-    tmp.querySelectorAll('script, style, noscript').forEach(n => n.remove());
+    tmp.querySelectorAll('script,style,noscript,nav,footer,header').forEach(n => n.remove());
     const text = (tmp.innerText || tmp.textContent || '').replace(/\s{3,}/g, '\n\n').trim();
     if (!text) throw new Error('No readable text found');
     const hostname = (() => { try { return new URL(url).hostname; } catch { return url; } })();
-    addToQueue(text, `fetched · ${hostname}`, url);
-    el.value = '';
+    // Use page title if available
+    const titleMatch = raw.match(/<title[^>]*>([^<]+)<\/title>/i);
+    const label = (titleMatch ? titleMatch[1].trim() : hostname);
+    if (labelEl && !_labelManual) labelEl.value = label;
+    el.value = text;
     onCollectInput();
-    switchTab('queue');
-    showToast('✓ URL fetched');
-    if (statusEl) statusEl.textContent = '';
+    showToast('✓ URL fetched — review then Add to Queue');
   } catch (e) {
     showToast(e.message || 'Fetch failed', 'error');
-    if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+  } finally {
+    const btn = document.getElementById('fetch-btn');
+    if (btn) btn.disabled = false;
   }
 }
 
-// FIX #3: saveUrlAsFile was missing — called by "💾 Save as File" button in #fetch-bar
-async function saveUrlAsFile() {
-  const el = document.getElementById('text-input');
+async function saveCurrentAsFile() {
+  const el = document.getElementById('collect-input');
+  const labelEl = document.getElementById('collect-label');
   if (!el) return;
-  const url = _extractUrl(el.value);
-  if (!url) { showToast('No URL detected', 'error'); return; }
-  showToast('Saving URL as file…');
-  try {
-    const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
-    const resp = await fetch(proxy);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const blob = await resp.blob();
-    const hostname = (() => { try { return new URL(url).hostname; } catch { return 'url'; } })();
-    const ext = url.split('?')[0].split('.').pop().slice(0, 5) || 'html';
-    const name = `${hostname}-${Date.now()}.${ext}`;
-    const id = Date.now() + Math.random();
-    // FIX #5 applied here too: store full meta + blob together
-    await idbFilePut({ id, name, type: blob.type, size: blob.size, timestamp: new Date().toISOString(), blob });
-    files.push({ id, name, type: blob.type, size: blob.size, timestamp: new Date().toISOString() });
-    renderFiles();
-    switchTab('files');
-    showToast(`✓ Saved as ${name}`);
-  } catch (e) {
-    showToast(e.message || 'Save failed', 'error');
-  }
-}
-
-function submitText() {
-  const el = document.getElementById('text-input');
-  if (!el) return;
-  const text = el.value.trim();
-  if (!text) { showToast('Nothing to add', 'error'); return; }
-  addToQueue(text, '', 'manual');
-  el.value = '';
-  onCollectInput();
-  switchTab('queue');
-  showToast('Added to queue');
+  const content = el.value.trim();
+  if (!content) { showToast('Nothing to save', 'error'); return; }
+  const name = (labelEl?.value?.trim() || 'saved-' + Date.now()) + '.txt';
+  const blob = new Blob([content], { type: 'text/plain' });
+  const id = Date.now() + Math.random();
+  await idbFilePut({ id, name, type: blob.type, size: blob.size, timestamp: new Date().toISOString(), blob });
+  files.push({ id, name, type: blob.type, size: blob.size, timestamp: new Date().toISOString() });
+  renderFiles();
+  switchTab('files');
+  showToast(`✓ Saved as ${name}`);
 }
 
 // ─── Recording ────────────────────────────────────────────────────────────────
+function toggleRecording() {
+  if (isRecording) stopRecording();
+  else startRecording();
+}
+
 async function startRecording() {
   if (isRecording) return;
   try {
@@ -394,21 +473,26 @@ async function startRecording() {
     mediaRecorder.start(100);
     isRecording = true;
     recordingSeconds = 0;
-    updateRecordingTimer();
-    recordingTimer = setInterval(updateRecordingTimer, 1000);
-    document.getElementById('rec-btn-start')?.setAttribute('disabled', '');
-    document.getElementById('rec-btn-stop')?.removeAttribute('disabled');
+    _tickTimer();
+    recordingTimer = setInterval(_tickTimer, 1000);
+    const btn = document.getElementById('record-btn');
+    const icon = document.getElementById('record-btn-icon');
+    const status = document.getElementById('record-status');
+    if (btn) btn.classList.add('recording');
+    if (icon) icon.textContent = '⏹️';
+    if (status) status.textContent = 'Recording…';
+    document.getElementById('record-waveform')?.classList.add('active');
     showToast('Recording started');
-  } catch (e) {
+  } catch {
     showToast('Microphone access denied', 'error');
   }
 }
 
-function updateRecordingTimer() {
+function _tickTimer() {
   recordingSeconds++;
   const m = String(Math.floor(recordingSeconds / 60)).padStart(2, '0');
   const s = String(recordingSeconds % 60).padStart(2, '0');
-  const el = document.getElementById('rec-timer');
+  const el = document.getElementById('record-timer');
   if (el) el.textContent = `${m}:${s}`;
 }
 
@@ -418,8 +502,13 @@ function stopRecording() {
   mediaRecorder.stream.getTracks().forEach(t => t.stop());
   isRecording = false;
   clearInterval(recordingTimer);
-  document.getElementById('rec-btn-start')?.removeAttribute('disabled');
-  document.getElementById('rec-btn-stop')?.setAttribute('disabled', '');
+  const btn = document.getElementById('record-btn');
+  const icon = document.getElementById('record-btn-icon');
+  const status = document.getElementById('record-status');
+  if (btn) btn.classList.remove('recording');
+  if (icon) icon.textContent = '🎙️';
+  if (status) status.textContent = 'Tap to record';
+  document.getElementById('record-waveform')?.classList.remove('active');
 }
 
 async function saveRecording() {
@@ -439,13 +528,19 @@ async function deleteRecording(id) {
   showToast('Recording deleted');
 }
 
+async function clearAllRecordings() {
+  if (!recordings.length) return;
+  if (!confirm('Delete all recordings?')) return;
+  for (const r of recordings) await idbDelete(r.id);
+  recordings = [];
+  renderRecordings();
+  showToast('All recordings deleted');
+}
+
 function playRecording(id) {
   const rec = recordings.find(r => r.id === id);
   if (!rec?.blob) return;
-  if (currentlyPlaying) {
-    currentlyPlaying.pause();
-    currentlyPlaying = null;
-  }
+  if (currentlyPlaying) { currentlyPlaying.pause(); currentlyPlaying = null; }
   const url = URL.createObjectURL(rec.blob);
   const audio = document.getElementById(`audio-${id}`);
   if (audio) {
@@ -457,19 +552,20 @@ function playRecording(id) {
 }
 
 async function transcribeRecording(id) {
+  const key = settings.apiKeys?.openai;
+  if (!key) { showToast('OpenAI key required in Settings → AI Keys', 'error'); return; }
   const btn = document.getElementById(`transcribe-btn-${id}`);
   if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
-  showToast('Transcribing…');
+  showToast('Transcribing via Whisper…');
   try {
     const rec = await idbGet(id);
     if (!rec?.blob) throw new Error('Recording not found');
-    if (!settings.openaiKey) throw new Error('OpenAI API key required in Settings');
     const form = new FormData();
     form.append('file', rec.blob, 'audio.webm');
     form.append('model', 'whisper-1');
     const resp = await fetch('https://api.openai.com/v1/audio/transcriptions', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${settings.openaiKey}` },
+      headers: { Authorization: `Bearer ${key}` },
       body: form
     });
     if (!resp.ok) throw new Error(`API error: ${resp.status}`);
@@ -477,7 +573,6 @@ async function transcribeRecording(id) {
     const text = data.text?.trim();
     if (!text) throw new Error('Empty transcript');
     addToQueue(text, 'transcript', rec.name);
-    switchTab('queue');
     showToast('✓ Transcription complete');
   } catch (e) {
     showToast(e.message || 'Transcription failed', 'error');
@@ -486,43 +581,49 @@ async function transcribeRecording(id) {
   }
 }
 
-// FIX #6: was missing closing </div> for outer .card wrapper — caused DOM corruption
 function renderRecordings() {
   const el = document.getElementById('recordings-list');
+  const emptyEl = document.getElementById('recordings-empty');
   if (!el) return;
-  if (!recordings.length) {
-    el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🎙</div><p>No recordings yet</p></div>';
-    return;
-  }
-  el.innerHTML = recordings.slice().reverse().map(rec => {
+  if (emptyEl) emptyEl.style.display = recordings.length ? 'none' : 'flex';
+  const cards = recordings.slice().reverse().map(rec => {
     const dur = rec.duration ? `${Math.floor(rec.duration/60)}:${String(rec.duration%60).padStart(2,'0')}` : '--:--';
-    return `<div class="card">
-      <div class="card-meta">
+    return `<div class="queue-card">
+      <div class="card-header">
         <span class="card-label">${escapeHtml(rec.name)}</span>
-        <span class="card-time">${dur}</span>
+        <span class="card-meta">${dur}</span>
       </div>
       <div class="card-actions">
         <button class="card-btn" onclick="playRecording(${rec.id})" title="Play">▶️</button>
-        <button class="card-btn card-btn--transcribe" onclick="transcribeRecording(${rec.id})" id="transcribe-btn-${rec.id}" title="Transcribe via OpenAI Whisper API">📝</button>
-        <button class="card-btn card-btn--local" onclick="localTranscribeRecording(${rec.id})" id="local-transcribe-btn-${rec.id}" title="Transcribe locally (Whisper-tiny, ~75MB, no API key needed)">🧠</button>
-        <button class="card-btn card-btn--delete" onclick="deleteRecording(${rec.id})">✕</button>
+        <button class="card-btn" onclick="transcribeRecording(${rec.id})" id="transcribe-btn-${rec.id}" title="Transcribe (OpenAI)">📝</button>
+        <button class="card-btn" onclick="localTranscribeRecording(${rec.id})" id="local-transcribe-btn-${rec.id}" title="Transcribe locally">🧠</button>
+        <button class="card-btn btn-danger" onclick="deleteRecording(${rec.id})">✕</button>
       </div>
-      <div id="local-progress-${rec.id}" style="display:none;font-size:0.75rem;color:var(--color-text-muted);padding:4px 0 0 0;"></div>
-      <audio id="audio-${rec.id}" style="display:none" controls></audio>
+      <div id="local-progress-${rec.id}" style="display:none;font-size:0.75rem;color:var(--color-text-muted);padding:4px 0"></div>
+      <audio id="audio-${rec.id}" style="display:none;width:100%;margin-top:8px" controls></audio>
     </div>`;
-  }).join('');
+  });
+  el.querySelectorAll('.queue-card').forEach(n => n.remove());
+  el.insertAdjacentHTML('beforeend', cards.join(''));
 }
 
 // ─── Files ────────────────────────────────────────────────────────────────────
-function isImageFile(file) {
-  return /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(file.name) || (file.type && file.type.startsWith('image/'));
+function triggerUpload() {
+  document.getElementById('file-upload-input')?.click();
 }
 
-function isPdfFile(file) {
-  return /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
+document.addEventListener('DOMContentLoaded', () => {
+  const input = document.getElementById('file-upload-input');
+  if (input) input.addEventListener('change', () => handleFileUpload(input));
+});
+
+function isImageFile(f) {
+  return /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i.test(f.name) || (f.type && f.type.startsWith('image/'));
+}
+function isPdfFile(f) {
+  return /\.pdf$/i.test(f.name) || f.type === 'application/pdf';
 }
 
-// FIX #5: store full metadata + blob together so it survives page reload
 async function handleFileUpload(input) {
   const fileList = input.files;
   if (!fileList?.length) return;
@@ -544,36 +645,156 @@ async function deleteFile(id) {
   showToast('File deleted');
 }
 
+async function clearAllFiles() {
+  if (!files.length) return;
+  if (!confirm('Delete all files?')) return;
+  for (const f of files) await idbFileDelete(f.id);
+  files = [];
+  renderFiles();
+  showToast('All files deleted');
+}
+
 function renderFiles() {
   const el = document.getElementById('files-list');
+  const emptyEl = document.getElementById('files-empty');
   if (!el) return;
-  if (!files.length) {
-    el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📁</div><p>No files yet</p></div>';
-    return;
-  }
-  el.innerHTML = files.map(file => {
+  if (emptyEl) emptyEl.style.display = files.length ? 'none' : 'flex';
+  const cards = files.map(file => {
     const canOcr = isImageFile(file);
     const isPdf = isPdfFile(file);
     const sizeKb = (file.size / 1024).toFixed(1);
-    return `<div class="card" id="file-card-${file.id}">
-      <div class="card-meta">
+    return `<div class="queue-card" id="fcard-${file.id}">
+      <div class="card-header">
         <span class="card-label">${escapeHtml(file.name)}</span>
-        <span class="card-source">${sizeKb}KB</span>
-        ${settings.showTimestamps ? `<span class="card-time">${new Date(file.timestamp).toLocaleTimeString()}</span>` : ''}
+        <span class="card-meta">${sizeKb} KB · ${new Date(file.timestamp).toLocaleTimeString()}</span>
       </div>
       <div class="card-actions">
+        <button class="card-btn" onclick="viewFile(${file.id})" title="View">👁</button>
         ${canOcr ? `<button class="card-btn" id="ocr-btn-${file.id}" onclick="ocrFile(${file.id})" title="OCR to text">🔍</button>` : ''}
-        ${canOcr ? `<button class="card-btn" id="ocr-table-btn-${file.id}" onclick="ocrTableFromFile(${file.id})" title="Extract table (hOCR)">📊</button>` : ''}
         ${canOcr ? `<button class="card-btn" id="qr-btn-${file.id}" onclick="readQRFromFile(${file.id})" title="Read QR code">📷</button>` : ''}
         ${isPdf  ? `<button class="card-btn" id="pdf-btn-${file.id}" onclick="extractPdfToQueue(${file.id})" title="Extract PDF text">📄</button>` : ''}
         <button class="card-btn" id="code-btn-${file.id}" onclick="extractCodeFromFile(${file.id})" title="Extract code blocks">⌨️</button>
-        <button class="card-btn" id="receipt-btn-${file.id}" onclick="parseReceiptFromFile(${file.id})" title="Parse receipt/invoice">🧾</button>
         <button class="card-btn" id="analyze-btn-${file.id}" onclick="analyzeFile(${file.id})" title="AI Analyze">🤖</button>
-        <button class="card-btn" id="stitch-add-btn-${file.id}" onclick="addToStitchQueue(${file.id})" title="Add to table stitch queue">🧵</button>
-        <button class="card-btn card-btn--delete" onclick="deleteFile(${file.id})">✕</button>
+        <button class="card-btn btn-danger" onclick="deleteFile(${file.id})" title="Delete">✕</button>
       </div>
     </div>`;
-  }).join('');
+  });
+  el.querySelectorAll('.queue-card').forEach(n => n.remove());
+  el.insertAdjacentHTML('beforeend', cards.join(''));
+}
+
+// ─── File Viewer ──────────────────────────────────────────────────────────────
+async function viewFile(id) {
+  const file = files.find(f => f.id == id);
+  if (!file) return;
+  const stored = await idbFileGet(id);
+  if (!stored?.blob) return;
+  const viewer = document.getElementById('file-viewer');
+  const content = document.getElementById('viewer-content');
+  const filename = document.getElementById('viewer-filename');
+  const listView = document.getElementById('files-list-view');
+  if (!viewer || !content) return;
+  if (filename) filename.textContent = file.name;
+  if (isImageFile(file)) {
+    const url = URL.createObjectURL(stored.blob);
+    content.innerHTML = `<img src="${url}" alt="${escapeHtml(file.name)}" style="max-width:100%;border-radius:8px">`;
+  } else {
+    const text = await stored.blob.text();
+    content.textContent = text.slice(0, 20000);
+  }
+  if (listView) listView.style.display = 'none';
+  viewer.style.display = 'block';
+}
+
+function closeFileViewer() {
+  const viewer = document.getElementById('file-viewer');
+  const listView = document.getElementById('files-list-view');
+  if (viewer) viewer.style.display = 'none';
+  if (listView) listView.style.display = 'block';
+}
+
+function addSelectionToQueue() {
+  const content = document.getElementById('viewer-content');
+  if (!content) return;
+  const sel = window.getSelection()?.toString().trim();
+  if (!sel) { showToast('Select some text first', 'error'); return; }
+  addToQueue(sel, 'selection', 'file viewer');
+}
+
+// ─── Compose ──────────────────────────────────────────────────────────────────
+function updateComposeStats() {
+  const area = document.getElementById('compose-area');
+  const stats = document.getElementById('compose-stats');
+  if (!area || !stats) return;
+  const chars = area.value.length;
+  const words = area.value.trim().split(/\s+/).filter(Boolean).length;
+  stats.textContent = `${chars.toLocaleString()} chars · ${words.toLocaleString()} words`;
+}
+
+function copyCompose() {
+  const area = document.getElementById('compose-area');
+  if (!area?.value) { showToast('Compose is empty', 'error'); return; }
+  navigator.clipboard.writeText(area.value)
+    .then(() => showToast('Copied!'))
+    .catch(() => showToast('Copy failed', 'error'));
+}
+
+function shareCompose() {
+  const area = document.getElementById('compose-area');
+  if (!area?.value) { showToast('Compose is empty', 'error'); return; }
+  if (navigator.share) {
+    navigator.share({ text: area.value }).catch(() => {});
+  } else {
+    copyCompose();
+    showToast('Share not supported — copied instead');
+  }
+}
+
+function clearCompose() {
+  const area = document.getElementById('compose-area');
+  if (!area?.value) return;
+  if (!confirm('Clear compose?')) return;
+  area.value = '';
+  updateComposeStats();
+}
+
+// ─── Settings Stats ───────────────────────────────────────────────────────────
+function refreshSettingsStats() {
+  const c = document.getElementById('stat-count');
+  const f = document.getElementById('stat-files');
+  const r = document.getElementById('stat-recordings');
+  const s = document.getElementById('stat-storage');
+  if (c) c.textContent = queue.length;
+  if (f) f.textContent = files.length;
+  if (r) r.textContent = recordings.length;
+  if (s) {
+    try {
+      let bytes = new Blob([localStorage.getItem(QUEUE_KEY) || '']).size;
+      s.textContent = bytes < 1024 ? `${bytes} B` : bytes < 1048576 ? `${(bytes/1024).toFixed(1)} KB` : `${(bytes/1048576).toFixed(1)} MB`;
+    } catch { s.textContent = '—'; }
+  }
+  // Refresh key status dots
+  ['openai','groq','gemini','anthropic','xai','mistral','deepseek','cerebras','fireworks','sambanova'].forEach(p => refreshKeyStatus(p));
+}
+
+// ─── Bookmarklet ──────────────────────────────────────────────────────────────
+function generateBookmarklet() {
+  const area = document.getElementById('bookmarklet-area');
+  const urlEl = document.getElementById('bookmarklet-url');
+  if (!area || !urlEl) return;
+  const appUrl = window.location.origin + window.location.pathname;
+  const code = `javascript:(function(){var t=document.title;var u=location.href;var body=document.body.innerText||'';var text='['+t+']\\n'+u+'\\n\\n'+body.slice(0,8000);if(navigator.clipboard){navigator.clipboard.writeText(text).then(function(){alert('Page text copied! Open InfinityPaste and paste (Ctrl+V or the Paste button).')});}else{prompt('Copy this:',text);}})();`;
+  urlEl.value = code;
+  area.style.display = 'flex';
+  showToast('Bookmarklet generated');
+}
+
+function copyBookmarklet() {
+  const urlEl = document.getElementById('bookmarklet-url');
+  if (!urlEl?.value) return;
+  navigator.clipboard.writeText(urlEl.value)
+    .then(() => showToast('Bookmarklet URL copied!'))
+    .catch(() => showToast('Copy failed', 'error'));
 }
 
 // ─── OCR ──────────────────────────────────────────────────────────────────────
@@ -609,7 +830,6 @@ async function ocrFile(id) {
     const text = result.data.text?.trim();
     if (!text) throw new Error('No text found');
     addToQueue(text, `ocr · ${file.name}`, 'Tesseract');
-    switchTab('queue');
     showToast('✓ OCR complete');
   } catch (e) {
     showToast(e.message || 'OCR failed', 'error');
@@ -623,8 +843,12 @@ async function extractPdfText(blob) {
   if (typeof pdfjsLib === 'undefined') {
     await new Promise((resolve, reject) => {
       const s = document.createElement('script');
-      s.src = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@4/build/pdf.min.mjs';
-      s.type = 'module'; s.onload = resolve; s.onerror = reject;
+      s.src = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3/build/pdf.min.js';
+      s.onload = () => {
+        if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3/build/pdf.worker.min.js';
+        resolve();
+      };
+      s.onerror = reject;
       document.head.appendChild(s);
     });
   }
@@ -651,7 +875,6 @@ async function extractPdfToQueue(id) {
     const text = await extractPdfText(stored.blob);
     if (!text) throw new Error('No text found in PDF');
     addToQueue(text, `pdf · ${file.name}`, 'pdfjs');
-    switchTab('queue');
     showToast('✓ PDF text extracted');
   } catch (e) {
     showToast(e.message || 'PDF extraction failed', 'error');
@@ -660,11 +883,64 @@ async function extractPdfToQueue(id) {
   }
 }
 
+// ─── QR Code ──────────────────────────────────────────────────────────────────
+let _jsqrLoaded = false;
+
+function _loadJsQR() {
+  if (_jsqrLoaded) return Promise.resolve();
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';
+    s.onload = () => { _jsqrLoaded = true; resolve(); };
+    s.onerror = () => reject(new Error('Failed to load jsQR'));
+    document.head.appendChild(s);
+  });
+}
+
+async function readQRFromFile(fileId) {
+  const file = files.find(f => f.id == fileId);
+  if (!file) return;
+  const btn = document.getElementById(`qr-btn-${fileId}`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+  showToast('Scanning for QR code…');
+  try {
+    await _loadJsQR();
+    const stored = await idbFileGet(fileId);
+    if (!stored?.blob) throw new Error('Image data missing');
+    const url = URL.createObjectURL(stored.blob);
+    const img = await _loadImageEl(url);
+    URL.revokeObjectURL(url);
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const code = window.jsQR(imageData.data, imageData.width, imageData.height);
+    if (!code) throw new Error('No QR code found in image');
+    addToQueue(code.data, `QR · ${file.name}`, 'jsQR');
+    showToast(`✓ QR decoded`);
+  } catch (e) {
+    showToast(e.message || 'QR scan failed', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '📷'; }
+  }
+}
+
+function _loadImageEl(src) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('Failed to load image'));
+    img.src = src;
+  });
+}
+
 // ─── AI Analyze ───────────────────────────────────────────────────────────────
 async function analyzeFile(id) {
   const file = files.find(f => f.id == id);
   if (!file) return;
-  if (!settings.openaiKey) { showToast('OpenAI API key required in Settings', 'error'); return; }
+  const key = settings.apiKeys?.openai;
+  if (!key) { showToast('OpenAI key required in Settings → AI Keys', 'error'); return; }
   const btn = document.getElementById(`analyze-btn-${id}`);
   if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
   showToast('Analyzing…');
@@ -681,11 +957,11 @@ async function analyzeFile(id) {
       });
       const resp = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.openaiKey}` },
-        body: JSON.stringify({
-          model: settings.openaiModel,
-          messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:${stored.blob.type};base64,${base64}` } }, { type: 'text', text: 'Describe this image in detail.' }] }]
-        })
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: [
+          { type: 'image_url', image_url: { url: `data:${stored.blob.type};base64,${base64}` } },
+          { type: 'text', text: 'Describe this image in detail.' }
+        ]}]})
       });
       if (!resp.ok) throw new Error(`API error: ${resp.status}`);
       const data = await resp.json();
@@ -694,11 +970,8 @@ async function analyzeFile(id) {
       const text = await stored.blob.text();
       const resp = await fetch('https://api.openai.com/v1/chat/completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${settings.openaiKey}` },
-        body: JSON.stringify({
-          model: settings.openaiModel,
-          messages: [{ role: 'user', content: `Analyze this text:\n\n${text.slice(0, 4000)}` }]
-        })
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` },
+        body: JSON.stringify({ model: 'gpt-4o', messages: [{ role: 'user', content: `Analyze this:\n\n${text.slice(0,4000)}` }]})
       });
       if (!resp.ok) throw new Error(`API error: ${resp.status}`);
       const data = await resp.json();
@@ -706,7 +979,6 @@ async function analyzeFile(id) {
     }
     if (!content) throw new Error('Empty response');
     addToQueue(content, `analysis · ${file.name}`, 'GPT');
-    switchTab('queue');
     showToast('✓ Analysis complete');
   } catch (e) {
     showToast(e.message || 'Analysis failed', 'error');
@@ -715,129 +987,68 @@ async function analyzeFile(id) {
   }
 }
 
-// ─── File Viewer ──────────────────────────────────────────────────────────────
-async function viewFile(id) {
-  const file = files.find(f => f.id == id);
+// ─── Code Extractor ───────────────────────────────────────────────────────────
+async function extractCodeFromFile(fileId) {
+  const file = files.find(f => f.id == fileId);
   if (!file) return;
-  const viewer = document.getElementById('file-viewer');
-  const viewerContent = document.getElementById('file-viewer-content');
-  const viewerTitle = document.getElementById('file-viewer-title');
-  if (!viewer || !viewerContent) return;
-  const stored = await idbFileGet(id);
-  if (!stored?.blob) return;
-  viewerTitle && (viewerTitle.textContent = file.name);
-  if (isImageFile(file)) {
-    const url = URL.createObjectURL(stored.blob);
-    viewerContent.innerHTML = `<img src="${url}" alt="${escapeHtml(file.name)}" style="max-width:100%;border-radius:8px">`;
-  } else {
-    const text = await stored.blob.text();
-    viewerContent.innerHTML = `<pre style="white-space:pre-wrap;word-break:break-all;font-size:0.85rem">${escapeHtml(text.slice(0, 10000))}</pre>`;
+  const btn = document.getElementById(`code-btn-${fileId}`);
+  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
+  showToast('Extracting code blocks…');
+  try {
+    const stored = await idbFileGet(fileId);
+    if (!stored?.blob) throw new Error('File data missing');
+    let text = '';
+    if (isImageFile(file)) {
+      const worker = await _getTesseractWorker();
+      const url = URL.createObjectURL(stored.blob);
+      const result = await worker.recognize(url);
+      URL.revokeObjectURL(url);
+      text = result.data.text?.trim();
+    } else {
+      text = await stored.blob.text();
+    }
+    if (!text) throw new Error('No text content found');
+    const blocks = _extractCodeBlocks(text);
+    if (!blocks.length) throw new Error('No code blocks detected');
+    const output = blocks.map(b => '```' + b.lang + '\n' + b.code + '\n```').join('\n\n');
+    addToQueue(output, `code · ${file.name}`, 'code-extractor');
+    showToast(`✓ ${blocks.length} code block${blocks.length !== 1 ? 's' : ''} extracted`);
+  } catch (e) {
+    showToast(e.message || 'Code extraction failed', 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⌨️'; }
   }
-  viewer.style.display = 'block';
 }
 
-function closeViewer() {
-  const viewer = document.getElementById('file-viewer');
-  if (viewer) viewer.style.display = 'none';
-}
-
-// ─── Settings ─────────────────────────────────────────────────────────────────
-// FIX #7 #8 #9: use .value / .checked directly so modal reflects saved state on re-open
-function openSettings() {
-  const modal = document.getElementById('settings-modal');
-  if (!modal) return;
-  const keyEl = document.getElementById('setting-key');
-  const modelEl = document.getElementById('setting-model');
-  const themeEl = document.getElementById('setting-theme');
-  const tsEl = document.getElementById('setting-timestamps');
-  if (keyEl) keyEl.value = settings.openaiKey;
-  if (modelEl) modelEl.value = settings.openaiModel;
-  if (themeEl) themeEl.value = settings.theme;
-  if (tsEl) tsEl.checked = settings.showTimestamps;
-  modal.style.display = 'flex';
-}
-
-function closeSettings() {
-  const modal = document.getElementById('settings-modal');
-  if (modal) modal.style.display = 'none';
-}
-
-function saveSettingsFromForm() {
-  settings.openaiKey = document.getElementById('setting-key')?.value?.trim() || '';
-  settings.openaiModel = document.getElementById('setting-model')?.value?.trim() || 'gpt-4o';
-  settings.theme = document.getElementById('setting-theme')?.value || 'auto';
-  settings.showTimestamps = document.getElementById('setting-timestamps')?.checked ?? true;
-  saveSettings();
-  applyTheme(settings.theme);
-  closeSettings();
-  showToast('Settings saved');
-}
-
-function exportData() {
-  const data = { queue, settings, exported: new Date().toISOString() };
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url; a.download = `infinitypaste-export-${Date.now()}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
-function importData(input) {
-  const file = input.files?.[0];
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = e => {
-    try {
-      const data = JSON.parse(e.target.result);
-      if (data.queue) { queue = data.queue; saveQueue(); renderQueue(); }
-      if (data.settings) { settings = { ...settings, ...data.settings }; saveSettings(); }
-      showToast('✓ Import complete');
-    } catch { showToast('Invalid export file', 'error'); }
-  };
-  reader.readAsText(file);
-}
-
-// FIX #4: generateBookmarklet was missing — called from settings modal
-function generateBookmarklet() {
-  const outputEl = document.getElementById('bookmarklet-output');
-  if (!outputEl) return;
-  // Build a bookmarklet that grabs page title + URL and posts to InfinityPaste via share target
-  // Since this is a PWA, we use the share URL or simply copy to clipboard
-  const appUrl = window.location.origin + window.location.pathname;
-  const code = `javascript:(function(){` +
-    `var t=document.title;` +
-    `var u=location.href;` +
-    `var text=t+'\\n'+u;` +
-    `if(navigator.share){navigator.share({title:t,url:u});}` +
-    `else{navigator.clipboard&&navigator.clipboard.writeText(text).then(function(){alert('Copied to clipboard! Open InfinityPaste and paste.');});}` +
-    `})();`;
-  outputEl.textContent = code;
-  outputEl.style.display = 'block';
-  navigator.clipboard?.writeText(code).then(() => showToast('Bookmarklet copied to clipboard'));
-}
-
-// ─── Init ─────────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', init);
-
-async function init() {
-  loadSettings();
-  loadQueue();
-  applyTheme(settings.theme);
-  await openDB();
-  recordings = await idbGetAll();
-  // FIX #5: reconstruct files[] from IDB records that now include full metadata
-  const storedFiles = await idbFileGetAll();
-  files = storedFiles.map(r => ({ id: r.id, name: r.name, type: r.type, size: r.size, timestamp: r.timestamp }));
-  renderQueue();
-  renderRecordings();
-  renderFiles();
-  document.querySelectorAll('.tab-btn').forEach(btn => {
-    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+function _extractCodeBlocks(text) {
+  const blocks = [];
+  const fenced = [...text.matchAll(/```(\w*)\n([\s\S]*?)```/g)];
+  if (fenced.length) { fenced.forEach(m => blocks.push({ lang: m[1] || _detectCodeLang(m[2]), code: m[2].trim() })); return blocks; }
+  const lines = text.split('\n');
+  let cur = [], inBlock = false;
+  lines.forEach(line => {
+    const isCode = /^(\t| {4,})/.test(line) || /^\s*(function|const|let|var|if|for|while|return|import|export|def |class |public |private )/.test(line);
+    if (isCode) { inBlock = true; cur.push(line); }
+    else if (inBlock && line.trim() === '') { cur.push(''); }
+    else if (inBlock) {
+      if (cur.filter(l => l.trim()).length >= 3) blocks.push({ lang: _detectCodeLang(cur.join('\n').trim()), code: cur.join('\n').trim() });
+      cur = []; inBlock = false;
+    }
   });
+  if (inBlock && cur.filter(l => l.trim()).length >= 3) blocks.push({ lang: _detectCodeLang(cur.join('\n').trim()), code: cur.join('\n').trim() });
+  return blocks;
 }
 
-// ─── Phase 4: Local AI Tools ───────────────────────────────────────────────────
+function _detectCodeLang(code) {
+  if (/import\s+\w|from\s+['"]|def\s+\w+\(|print\(/.test(code)) return 'python';
+  if (/function\s+\w+\(|const\s+\w+\s*=|let\s+\w+|=>\s*{|require\(/.test(code)) return 'javascript';
+  if (/<\?php|\$[A-Z]/.test(code)) return 'php';
+  if (/<[a-z]+[\s>]|<\/[a-z]+>/.test(code)) return 'html';
+  if (/SELECT|INSERT|UPDATE|DELETE|FROM|WHERE/i.test(code)) return 'sql';
+  return '';
+}
+
+// ─── Local AI (Transformers.js) ───────────────────────────────────────────────
 const TRANSFORMERS_CDN = 'https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/transformers.min.js';
 let _transformersLoaded = false, _whisperPipeline = null, _whisperLoading = false;
 
@@ -845,9 +1056,9 @@ function _loadTransformers() {
   if (_transformersLoaded) return Promise.resolve();
   return new Promise((resolve, reject) => {
     const s = document.createElement('script');
-    s.src = TRANSFORMERS_CDN; s.type = 'text/javascript';
+    s.src = TRANSFORMERS_CDN;
     s.onload = () => { _transformersLoaded = true; resolve(); };
-    s.onerror = () => reject(new Error('Failed to load Transformers.js.'));
+    s.onerror = () => reject(new Error('Failed to load Transformers.js'));
     document.head.appendChild(s);
   });
 }
@@ -868,15 +1079,15 @@ async function localTranscribeRecording(id) {
   const btn = document.getElementById(`local-transcribe-btn-${id}`);
   const progressEl = document.getElementById(`local-progress-${id}`);
   if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
-  if (progressEl) { progressEl.style.display = 'block'; progressEl.textContent = 'Loading Whisper model (~75MB, cached after first use)…'; }
-  showToast('Loading local Whisper model…');
+  if (progressEl) { progressEl.style.display = 'block'; progressEl.textContent = 'Loading Whisper model (~75MB)…'; }
+  showToast('Loading local Whisper…');
   try {
     const rec = await idbGet(id);
     if (!rec?.blob) throw new Error('Recording not found');
     const progressCb = (p) => {
       if (!progressEl) return;
-      if (p.status === 'downloading') progressEl.textContent = `Downloading model: ${Math.round(p.progress||0)}%`;
-      else if (p.status === 'loading') progressEl.textContent = 'Loading model into memory…';
+      if (p.status === 'downloading') progressEl.textContent = `Downloading: ${Math.round(p.progress || 0)}%`;
+      else if (p.status === 'loading') progressEl.textContent = 'Loading model…';
     };
     const whisper = await _getWhisperPipeline(progressCb);
     if (progressEl) progressEl.textContent = 'Transcribing…';
@@ -889,7 +1100,6 @@ async function localTranscribeRecording(id) {
     const text = (result?.text || '').trim();
     if (!text) throw new Error('Empty transcript');
     addToQueue(text, 'local-transcript', rec.name);
-    switchTab('queue');
     showToast('✓ Local transcription complete');
   } catch (e) {
     showToast(e.message || 'Local transcription failed', 'error');
@@ -899,501 +1109,112 @@ async function localTranscribeRecording(id) {
   }
 }
 
-function extractKeywordsFromQueueItem(id) {
-  const item = queue.find(i => i.id === id);
-  if (!item) return;
-  const keywords = _tfidfKeywords(item.content, 10);
-  if (!keywords.length) { showToast('No keywords found', 'error'); return; }
-  const result = `Keywords from: ${item.label || 'item'}\n\n${keywords.map((k,i) => `${i+1}. ${k.word} (score: ${k.score.toFixed(3)})`).join('\n')}`;
-  addToQueue(result, `keywords · ${item.label || 'item'}`, 'tfidf');
-  switchTab('queue');
-  showToast(`✓ ${keywords.length} keywords extracted`);
-}
-
+// ─── TF-IDF Keywords ──────────────────────────────────────────────────────────
 function _tfidfKeywords(text, count = 10) {
   const sw = new Set(['the','a','an','and','or','but','in','on','at','to','for','of','with','by','from','is','was','are','were','be','been','have','has','had','do','does','did','will','would','could','should','may','might','this','that','these','those','i','you','he','she','it','we','they','what','which','who','when','where','why','how','all','each','every','both','few','more','most','other','some','such','no','nor','not','only','own','same','so','than','too','very','just','because','as','until','while','about','into','through','during','before','after','above','below','between','out','off','over','under','again','then','once','here','there','if','can','its','your','our','their','his','her','my','one','two','three','also','get','use','used','using','said','says','like','well','back','even','want','see','know','think','make','made','time','way','new','good','first','last','long','great','little','right','big','high','different','small','large','next','early','young','important','public','private','real','best','free','able']);
   const words = text.toLowerCase().replace(/https?:\/\/\S+/g,'').replace(/[^a-z0-9\s]/g,' ').split(/\s+/).filter(w => w.length > 3 && !sw.has(w) && !/^\d+$/.test(w));
   const freq = {};
-  words.forEach(w => freq[w] = (freq[w]||0)+1);
-  const total = words.length||1, unique = Object.keys(freq).length||1;
-  return Object.entries(freq).map(([word,c]) => ({ word, score:(c/total)*Math.log(1+unique/c) })).sort((a,b)=>b.score-a.score).slice(0,count);
+  words.forEach(w => freq[w] = (freq[w] || 0) + 1);
+  const total = words.length || 1, unique = Object.keys(freq).length || 1;
+  return Object.entries(freq).map(([word,c]) => ({ word, score: (c/total) * Math.log(1 + unique/c) })).sort((a,b) => b.score - a.score).slice(0, count);
 }
 
-let _summarizePipeline = null, _summarizeLoading = false;
-
-async function localSummarizeQueueItem(id) {
+function extractKeywords(id) {
   const item = queue.find(i => i.id === id);
   if (!item) return;
-  if (item.content.trim().split(/\s+/).length < 80) { showToast('Text too short to summarize', 'error'); return; }
-  const btn = document.getElementById(`summarize-btn-${id}`);
-  const progressEl = document.getElementById(`summarize-progress-${id}`);
-  if (btn) { btn.disabled = true; btn.textContent = '⏳'; }
-  if (progressEl) { progressEl.style.display = 'block'; progressEl.textContent = 'Loading summarization model (~250MB, cached after first use)…'; }
-  showToast('Loading local summarization model…');
+  const keywords = _tfidfKeywords(item.content, 10);
+  if (!keywords.length) { showToast('No keywords found', 'error'); return; }
+  const result = `Keywords from: ${item.label || 'item'}\n\n` + keywords.map((k,i) => `${i+1}. ${k.word} (${k.score.toFixed(3)})`).join('\n');
+  addToQueue(result, `keywords · ${item.label || 'item'}`, 'tfidf');
+  showToast(`✓ ${keywords.length} keywords extracted`);
+}
+
+// ─── Language Detection ───────────────────────────────────────────────────────
+const FRANC_CDN = 'https://cdn.jsdelivr.net/npm/franc-min@6.2.0/index.js';
+let _francLoaded = false, _francDetect = null;
+
+function _loadFranc() {
+  if (_francLoaded) return Promise.resolve();
+  return import(FRANC_CDN).then(mod => { _francDetect = mod.franc || mod.default; _francLoaded = true; }).catch(() => { throw new Error('Failed to load franc'); });
+}
+
+const ISO_LANG = { eng:'English',spa:'Spanish',fra:'French',deu:'German',ita:'Italian',por:'Portuguese',rus:'Russian',zho:'Chinese',jpn:'Japanese',kor:'Korean',ara:'Arabic',hin:'Hindi' };
+
+async function detectLang(id) {
+  const item = queue.find(i => i.id === id);
+  if (!item) return;
+  showToast('Detecting language…');
   try {
-    if (!_summarizePipeline) {
-      if (_summarizeLoading) throw new Error('Model already loading — please wait…');
-      _summarizeLoading = true;
-      await _loadTransformers();
-      const { pipeline, env } = window.transformers || {};
-      if (env) env.allowLocalModels = false;
-      _summarizePipeline = await pipeline('summarization', 'Xenova/distilbart-cnn-6-6', {
-        progress_callback: (p) => { if (progressEl && p.status==='downloading') progressEl.textContent = `Downloading: ${Math.round(p.progress||0)}%`; }
-      });
-      _summarizeLoading = false;
+    await _loadFranc();
+    const lang = _francDetect(item.content, { minLength: 5 });
+    if (lang === 'und') { showToast('Language undetermined'); return; }
+    const name = ISO_LANG[lang] || lang;
+    const idx = queue.findIndex(i => i.id === id);
+    if (idx >= 0 && !queue[idx].label?.includes(name)) {
+      queue[idx].label = queue[idx].label ? `${queue[idx].label} · ${name}` : name;
+      saveQueue(); renderQueue();
     }
-    if (progressEl) progressEl.textContent = 'Summarizing…';
-    const result = await _summarizePipeline(item.content.slice(0,4000), { max_length:150, min_length:30 });
-    const summary = result?.[0]?.summary_text?.trim();
-    if (!summary) throw new Error('Empty summary');
-    addToQueue(summary, `summary · ${item.label||'item'}`, 'distilBART');
-    switchTab('queue');
-    showToast('✓ Summary added to queue');
-  } catch(e) {
-    _summarizeLoading = false;
-    showToast(e.message||'Summarization failed','error');
-  } finally {
-    if (btn) { btn.disabled=false; btn.textContent='📋'; }
-    if (progressEl) progressEl.style.display='none';
+    showToast(`✓ Detected: ${name}`);
+  } catch (e) {
+    showToast(e.message || 'Detection failed', 'error');
   }
 }
 
+// ─── Text Cleanup ─────────────────────────────────────────────────────────────
 const COMPROMISE_CDN = 'https://cdn.jsdelivr.net/npm/compromise@14.14.4/builds/compromise.min.js';
 let _compromiseLoaded = false;
 
 function _loadCompromise() {
   if (_compromiseLoaded) return Promise.resolve();
-  return new Promise((resolve,reject) => {
+  return new Promise((resolve, reject) => {
     const s = document.createElement('script');
     s.src = COMPROMISE_CDN;
-    s.onload = () => { _compromiseLoaded=true; resolve(); };
+    s.onload = () => { _compromiseLoaded = true; resolve(); };
     s.onerror = () => reject(new Error('Failed to load compromise.js'));
     document.head.appendChild(s);
   });
 }
 
-async function cleanupQueueItem(id) {
-  const item = queue.find(i => i.id===id);
+async function cleanupItem(id) {
+  const item = queue.find(i => i.id === id);
   if (!item) return;
-  const btn = document.getElementById(`cleanup-btn-${id}`);
-  if (btn) { btn.disabled=true; btn.textContent='⏳'; }
   showToast('Cleaning up text…');
   try {
     await _loadCompromise();
     const nlp = window.nlp;
     if (!nlp) throw new Error('compromise.js not available');
     let text = item.content.replace(/\r\n/g,'\n').replace(/\r/g,'\n').replace(/[ \t]+/g,' ').replace(/\n{3,}/g,'\n\n').trim();
-    text = text.replace(/([a-z])([A-Z])/g,'$1 $2');
     const doc = nlp(text);
     doc.contractions().expand();
     let cleaned = doc.text();
-    cleaned = cleaned.replace(/\bl\b(?=\s+[a-z])/g,'I').replace(/\s+([.,!?;:])/g,'$1').replace(/([.,!?;:])(?=[a-zA-Z])/g,'$1 ').replace(/\n[ \t]+/g,'\n').trim();
-    addToQueue(cleaned, `cleaned · ${item.label||'item'}`, 'compromise');
-    switchTab('queue');
-    showToast('✓ Cleaned text added to queue');
-  } catch(e) {
-    showToast(e.message||'Cleanup failed','error');
-  } finally {
-    if (btn) { btn.disabled=false; btn.textContent='✨'; }
+    cleaned = cleaned.replace(/\s+([.,!?;:])/g,'$1').replace(/([.,!?;:])(?=[a-zA-Z])/g,'$1 ').trim();
+    addToQueue(cleaned, `cleaned · ${item.label || 'item'}`, 'compromise');
+    showToast('✓ Cleaned text added');
+  } catch (e) {
+    showToast(e.message || 'Cleanup failed', 'error');
   }
 }
 
-const FRANC_CDN = 'https://cdn.jsdelivr.net/npm/franc-min@6.2.0/index.js';
-let _francLoaded = false, _francDetect = null;
+// ─── Compose textarea live stats ──────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  const area = document.getElementById('compose-area');
+  if (area) area.addEventListener('input', updateComposeStats);
+});
 
-function _loadFranc() {
-  if (_francLoaded) return Promise.resolve();
-  return import(FRANC_CDN).then(mod => { _francDetect=mod.franc||mod.default; _francLoaded=true; }).catch(()=>{ throw new Error('Failed to load franc.'); });
-}
+// ─── Init ─────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', init);
 
-const ISO_LANG_NAMES = {eng:'English',spa:'Spanish',fra:'French',deu:'German',ita:'Italian',por:'Portuguese',rus:'Russian',zho:'Chinese',jpn:'Japanese',kor:'Korean',ara:'Arabic',hin:'Hindi',nld:'Dutch',pol:'Polish',swe:'Swedish',nor:'Norwegian',dan:'Danish',fin:'Finnish',tur:'Turkish',vie:'Vietnamese',ind:'Indonesian',msa:'Malay',tha:'Thai',ces:'Czech',ron:'Romanian',hun:'Hungarian',ukr:'Ukrainian',cat:'Catalan',heb:'Hebrew'};
-
-async function detectLanguageOfItem(id) {
-  const item = queue.find(i => i.id===id);
-  if (!item) return;
-  const btn = document.getElementById(`lang-btn-${id}`);
-  if (btn) { btn.disabled=true; btn.textContent='⏳'; }
-  showToast('Detecting language…');
-  try {
-    await _loadFranc();
-    const lang = _francDetect(item.content,{minLength:5});
-    if (lang==='und') { showToast('Language undetermined'); return; }
-    const name = ISO_LANG_NAMES[lang]||lang;
-    const idx = queue.findIndex(i=>i.id===id);
-    if (idx>=0 && !queue[idx].label?.includes(name)) {
-      queue[idx].label = queue[idx].label ? `${queue[idx].label} · ${name}` : name;
-      saveQueue(); renderQueue();
-    }
-    showToast(`✓ Detected: ${name} (${lang})`);
-  } catch(e) {
-    showToast(e.message||'Language detection failed','error');
-  } finally {
-    if (btn) { btn.disabled=false; btn.textContent='🌐'; }
-  }
-}
-
-async function detectAllLanguages() {
-  if (!queue.length) { showToast('Queue is empty','error'); return; }
-  showToast('Detecting languages…');
-  try {
-    await _loadFranc();
-    let tagged = 0;
-    queue.forEach((item,idx) => {
-      const lang = _francDetect(item.content,{minLength:5});
-      if (lang!=='und') {
-        const name = ISO_LANG_NAMES[lang]||lang;
-        if (!item.label?.includes(name)) { queue[idx].label=item.label?`${item.label} · ${name}`:name; tagged++; }
-      }
-    });
-    saveQueue(); renderQueue();
-    showToast(`✓ Tagged ${tagged} item${tagged!==1?'s':''} with language`);
-  } catch(e) {
-    showToast(e.message||'Batch detection failed','error');
-  }
-}
-
-// ─── Phase 5: Advanced Local Extraction Tools ─────────────────────────────────
-
-// ─── Feature 14: hOCR Table OCR ───────────────────────────────────────────────
-async function ocrTableFromFile(fileId) {
-  const file = files.find(f => f.id == fileId);
-  if (!file) return;
-  const btn = document.getElementById(`ocr-table-btn-${fileId}`);
-  if (btn) { btn.disabled=true; btn.textContent='⏳'; }
-  showToast('Running hOCR table detection…');
-  try {
-    const stored = await idbFileGet(fileId);
-    if (!stored?.blob) throw new Error('Image data missing — please re-upload the file');
-    const objectUrl = URL.createObjectURL(stored.blob);
-    const worker = await _getTesseractWorker();
-    const result = await worker.recognize(objectUrl, {}, { hocr: true });
-    URL.revokeObjectURL(objectUrl);
-    const hocr = result.data.hocr;
-    if (!hocr) throw new Error('No hOCR data returned');
-    const table = _hocrToMarkdownTable(hocr);
-    if (!table) throw new Error('No table structure detected in image');
-    addToQueue(table, `table · ${file.name}`, 'hOCR');
-    switchTab('queue');
-    showToast('✓ Table extracted and added to queue');
-  } catch(e) {
-    showToast(e.message||'hOCR table extraction failed','error');
-  } finally {
-    if (btn) { btn.disabled=false; btn.textContent='📊'; }
-  }
-}
-
-function _hocrToMarkdownTable(hocr) {
-  const parser = new DOMParser();
-  const doc = parser.parseFromString(hocr, 'text/html');
-  const words = [];
-  doc.querySelectorAll('.ocrx_word').forEach(el => {
-    const bbox = el.getAttribute('title')?.match(/bbox (\d+) (\d+) (\d+) (\d+)/);
-    if (!bbox) return;
-    words.push({
-      text: el.textContent.trim(),
-      x1: parseInt(bbox[1]), y1: parseInt(bbox[2]),
-      x2: parseInt(bbox[3]), y2: parseInt(bbox[4]),
-      cx: (parseInt(bbox[1])+parseInt(bbox[3]))/2,
-      cy: (parseInt(bbox[2])+parseInt(bbox[4]))/2,
-    });
-  });
-  if (words.length < 4) return null;
-  const ROW_THRESHOLD = 14;
-  const rows = [];
-  words.forEach(w => {
-    const row = rows.find(r => Math.abs(r.cy - w.cy) < ROW_THRESHOLD);
-    if (row) { row.words.push(w); row.cy = (row.cy + w.cy) / 2; }
-    else rows.push({ cy: w.cy, words: [w] });
-  });
-  rows.sort((a,b) => a.cy - b.cy);
-  if (rows.length < 2) return null;
-  rows.forEach(r => r.words.sort((a,b) => a.cx - b.cx));
-  const COL_THRESHOLD = 40;
-  const allCx = rows.flatMap(r => r.words.map(w => w.cx)).sort((a,b)=>a-b);
-  const cols = [];
-  allCx.forEach(cx => { const col = cols.find(c => Math.abs(c-cx) < COL_THRESHOLD); if (!col) cols.push(cx); });
-  cols.sort((a,b)=>a-b);
-  if (cols.length < 2) return null;
-  const grid = rows.map(row => {
-    const cells = Array(cols.length).fill('');
-    row.words.forEach(w => {
-      const ci = cols.reduce((best,c,i) => Math.abs(c-w.cx) < Math.abs(cols[best]-w.cx) ? i : best, 0);
-      cells[ci] = cells[ci] ? cells[ci]+' '+w.text : w.text;
-    });
-    return cells;
-  });
-  const header = `| ${grid[0].join(' | ')} |`;
-  const divider = `| ${grid[0].map(()=>'---').join(' | ')} |`;
-  const body = grid.slice(1).map(r => `| ${r.join(' | ')} |`).join('\n');
-  return `${header}\n${divider}\n${body}`;
-}
-
-// ─── Feature 15: Multi-Page Table Stitcher ────────────────────────────────────
-let _stitchFiles = [];
-
-function addToStitchQueue(fileId) {
-  const file = files.find(f => f.id == fileId);
-  if (!file) return;
-  if (_stitchFiles.find(f => f.id == fileId)) { showToast('Already in stitch queue','error'); return; }
-  _stitchFiles.push(file);
-  renderStitchQueue();
-  showToast(`✓ Added to stitch queue (${_stitchFiles.length} image${_stitchFiles.length!==1?'s':''})`);
-}
-
-function removeFromStitchQueue(fileId) {
-  _stitchFiles = _stitchFiles.filter(f => f.id != fileId);
-  renderStitchQueue();
-}
-
-function renderStitchQueue() {
-  const el = document.getElementById('stitch-queue-list');
-  const area = document.getElementById('stitch-area');
-  if (!el || !area) return;
-  area.style.display = _stitchFiles.length ? 'block' : 'none';
-  el.innerHTML = _stitchFiles.map(f =>
-    `<span class="stitch-item">${escapeHtml(f.name)} <button onclick="removeFromStitchQueue(${f.id})">✕</button></span>`
-  ).join('');
-}
-
-async function stitchTables() {
-  if (_stitchFiles.length < 2) { showToast('Add at least 2 images to stitch','error'); return; }
-  const btn = document.getElementById('stitch-btn');
-  if (btn) { btn.disabled=true; btn.textContent='⏳'; }
-  showToast(`Stitching ${_stitchFiles.length} tables…`);
-  try {
-    const worker = await _getTesseractWorker();
-    const allTables = [];
-    for (const file of _stitchFiles) {
-      const stored = await idbFileGet(file.id);
-      if (!stored?.blob) throw new Error(`Missing data for ${file.name}`);
-      const url = URL.createObjectURL(stored.blob);
-      const result = await worker.recognize(url, {}, { hocr: true });
-      URL.revokeObjectURL(url);
-      const table = _hocrToMarkdownTable(result.data.hocr);
-      if (table) allTables.push({ name: file.name, table });
-    }
-    if (!allTables.length) throw new Error('No tables detected in any image');
-    const parsed = allTables.map(t => {
-      const lines = t.table.split('\n').filter(l => l.startsWith('|'));
-      return { name: t.name, header: lines[0], divider: lines[1], rows: lines.slice(2), cols: lines[0].split('|').filter(c => c.trim()) };
-    });
-    const base = parsed[0];
-    const merged = [base.header, base.divider, ...base.rows];
-    for (let i = 1; i < parsed.length; i++) {
-      parsed[i].rows.forEach(row => {
-        const isDupe = merged.some(existing => _stringSimilarity(existing.toLowerCase(), row.toLowerCase()) > 0.85);
-        if (!isDupe) merged.push(row);
-      });
-    }
-    const label = `stitched table · ${_stitchFiles.map(f=>f.name).join(' + ')}`;
-    addToQueue(merged.join('\n'), label, 'table-stitcher');
-    _stitchFiles = []; renderStitchQueue(); switchTab('queue');
-    showToast('✓ Tables stitched and added to queue');
-  } catch(e) {
-    showToast(e.message||'Stitch failed','error');
-  } finally {
-    if (btn) { btn.disabled=false; btn.textContent='🧵 Stitch Tables'; }
-  }
-}
-
-function _stringSimilarity(a, b) {
-  const longer = a.length > b.length ? a : b;
-  const shorter = a.length > b.length ? b : a;
-  if (!longer.length) return 1.0;
-  return (longer.length - _levenshtein(longer, shorter)) / longer.length;
-}
-
-function _levenshtein(a, b) {
-  const m = a.length, n = b.length;
-  const dp = Array.from({length:m+1}, (_,i) => Array.from({length:n+1}, (_,j) => i===0?j:j===0?i:0));
-  for (let i=1;i<=m;i++) for(let j=1;j<=n;j++)
-    dp[i][j] = a[i-1]===b[j-1] ? dp[i-1][j-1] : 1+Math.min(dp[i-1][j],dp[i][j-1],dp[i-1][j-1]);
-  return dp[m][n];
-}
-
-// ─── Feature 16: QR Code Reader ───────────────────────────────────────────────
-const JSQR_CDN = 'https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js';
-let _jsqrLoaded = false;
-
-function _loadJsQR() {
-  if (_jsqrLoaded) return Promise.resolve();
-  return new Promise((resolve,reject) => {
-    const s = document.createElement('script');
-    s.src = JSQR_CDN;
-    s.onload = () => { _jsqrLoaded=true; resolve(); };
-    s.onerror = () => reject(new Error('Failed to load jsQR'));
-    document.head.appendChild(s);
-  });
-}
-
-async function readQRFromFile(fileId) {
-  const file = files.find(f => f.id==fileId);
-  if (!file) return;
-  const btn = document.getElementById(`qr-btn-${fileId}`);
-  if (btn) { btn.disabled=true; btn.textContent='⏳'; }
-  showToast('Scanning for QR code…');
-  try {
-    await _loadJsQR();
-    const stored = await idbFileGet(fileId);
-    if (!stored?.blob) throw new Error('Image data missing');
-    const url = URL.createObjectURL(stored.blob);
-    const img = await _loadImageEl(url);
-    URL.revokeObjectURL(url);
-    const canvas = document.createElement('canvas');
-    canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img,0,0);
-    const imageData = ctx.getImageData(0,0,canvas.width,canvas.height);
-    const code = window.jsQR(imageData.data, imageData.width, imageData.height);
-    if (!code) throw new Error('No QR code found in image');
-    addToQueue(code.data, `QR · ${file.name}`, 'jsQR');
-    switchTab('queue');
-    showToast(`✓ QR decoded: ${code.data.slice(0,40)}${code.data.length>40?'…':''}`);
-  } catch(e) {
-    showToast(e.message||'QR scan failed','error');
-  } finally {
-    if (btn) { btn.disabled=false; btn.textContent='📷'; }
-  }
-}
-
-function _loadImageEl(src) {
-  return new Promise((resolve,reject) => {
-    const img = new Image();
-    img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error('Failed to load image'));
-    img.src = src;
-  });
-}
-
-// ─── Feature 17: Code Block Extractor ─────────────────────────────────────────
-async function extractCodeFromFile(fileId) {
-  const file = files.find(f => f.id==fileId);
-  if (!file) return;
-  const btn = document.getElementById(`code-btn-${fileId}`);
-  if (btn) { btn.disabled=true; btn.textContent='⏳'; }
-  showToast('Extracting code blocks…');
-  try {
-    const stored = await idbFileGet(fileId);
-    if (!stored?.blob) throw new Error('File data missing');
-    let text = '';
-    if (isImageFile({name:file.name,type:stored.blob.type})) {
-      const worker = await _getTesseractWorker();
-      const url = URL.createObjectURL(stored.blob);
-      const result = await worker.recognize(url);
-      URL.revokeObjectURL(url);
-      text = result.data.text?.trim();
-    } else {
-      text = await stored.blob.text();
-    }
-    if (!text) throw new Error('No text content found');
-    const blocks = _extractCodeBlocks(text);
-    if (!blocks.length) throw new Error('No code blocks detected');
-    const output = blocks.map(b => '```'+b.lang+'\n'+b.code+'\n```').join('\n\n');
-    addToQueue(output, `code · ${file.name}`, 'code-extractor');
-    switchTab('queue');
-    showToast(`✓ ${blocks.length} code block${blocks.length!==1?'s':''} extracted`);
-  } catch(e) {
-    showToast(e.message||'Code extraction failed','error');
-  } finally {
-    if (btn) { btn.disabled=false; btn.textContent='⌨️'; }
-  }
-}
-
-function _extractCodeBlocks(text) {
-  const blocks = [];
-  const fenced = [...text.matchAll(/```(\w*)\n([\s\S]*?)```/g)];
-  if (fenced.length) { fenced.forEach(m => blocks.push({ lang: m[1]||_detectCodeLang(m[2]), code: m[2].trim() })); return blocks; }
-  const lines = text.split('\n');
-  let currentBlock = [], inBlock = false;
-  lines.forEach(line => {
-    const isCode = /^(\t| {4,})/.test(line) || /^[\s]*(function|const|let|var|if|for|while|return|import|export|def |class |public |private |<\?php|\$[A-Za-z])/.test(line);
-    if (isCode) { inBlock=true; currentBlock.push(line); }
-    else if (inBlock && line.trim()==='') { currentBlock.push(''); }
-    else if (inBlock) {
-      if (currentBlock.filter(l=>l.trim()).length >= 3) blocks.push({ lang: _detectCodeLang(currentBlock.join('\n').trim()), code: currentBlock.join('\n').trim() });
-      currentBlock=[]; inBlock=false;
-    }
-  });
-  if (inBlock && currentBlock.filter(l=>l.trim()).length >= 3) blocks.push({ lang: _detectCodeLang(currentBlock.join('\n').trim()), code: currentBlock.join('\n').trim() });
-  return blocks;
-}
-
-function _detectCodeLang(code) {
-  if (/import\s+\w|from\s+['"]|def\s+\w+\(|print\(/.test(code)) return 'python';
-  if (/function\s+\w+\(|const\s+\w+\s*=|let\s+\w+|=>\s*{|require\(/.test(code)) return 'javascript';
-  if (/<\?php|\$[A-Z]/.test(code)) return 'php';
-  if (/fun\s+\w+\(|val\s+\w+/.test(code)) return 'kotlin';
-  if (/func\s+\w+\(|guard\s+let/.test(code)) return 'swift';
-  if (/#include|int main\(|printf\(/.test(code)) return 'c';
-  if (/<[a-z]+[\s>]|<\/[a-z]+>/.test(code)) return 'html';
-  if (/SELECT|INSERT|UPDATE|DELETE|FROM|WHERE/i.test(code)) return 'sql';
-  return '';
-}
-
-// ─── Feature 18: Receipt & Invoice Parser ─────────────────────────────────────
-async function parseReceiptFromFile(fileId) {
-  const file = files.find(f => f.id==fileId);
-  if (!file) return;
-  const btn = document.getElementById(`receipt-btn-${fileId}`);
-  if (btn) { btn.disabled=true; btn.textContent='⏳'; }
-  showToast('Parsing receipt…');
-  try {
-    const stored = await idbFileGet(fileId);
-    if (!stored?.blob) throw new Error('File data missing');
-    let text = '';
-    if (isImageFile({name:file.name,type:stored.blob.type})) {
-      const worker = await _getTesseractWorker();
-      const url = URL.createObjectURL(stored.blob);
-      const result = await worker.recognize(url);
-      URL.revokeObjectURL(url);
-      text = result.data.text?.trim();
-    } else if (isPdfFile({name:file.name,type:stored.blob.type})) {
-      text = await extractPdfText(stored.blob);
-    } else {
-      text = await stored.blob.text();
-    }
-    if (!text) throw new Error('No text extracted');
-    const parsed = _parseReceiptText(text);
-    addToQueue(_formatReceiptRecord(parsed, file.name), `receipt · ${parsed.vendor||file.name}`, 'receipt-parser');
-    switchTab('queue');
-    showToast('✓ Receipt parsed and added to queue');
-  } catch(e) {
-    showToast(e.message||'Receipt parse failed','error');
-  } finally {
-    if (btn) { btn.disabled=false; btn.textContent='🧾'; }
-  }
-}
-
-function _parseReceiptText(text) {
-  const lines = text.split('\n').map(l=>l.trim()).filter(Boolean);
-  const result = { vendor:'', date:'', total:'', subtotal:'', tax:'', items:[] };
-  for (const line of lines.slice(0,5)) {
-    if (!/^\d|^\$|^total|^date/i.test(line) && line.length > 2) { result.vendor=line; break; }
-  }
-  const dateM = text.match(/\b(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}|\w+ \d{1,2},?\s*\d{4}|\d{4}-\d{2}-\d{2})\b/i);
-  if (dateM) result.date = dateM[0];
-  const totalM = text.match(/total[:\s]+\$?([\d,]+\.\d{2})/i);
-  if (totalM) result.total = totalM[1];
-  const subM = text.match(/sub.?total[:\s]+\$?([\d,]+\.\d{2})/i);
-  if (subM) result.subtotal = subM[1];
-  const taxM = text.match(/tax[:\s]+\$?([\d,]+\.\d{2})/i);
-  if (taxM) result.tax = taxM[1];
-  const itemRe = /^(.+?)\s+\$?([\d,]+\.\d{2})$/;
-  lines.forEach(line => {
-    if (/total|subtotal|tax|tip|change|cash|card|balance/i.test(line)) return;
-    const m = line.match(itemRe);
-    if (m && m[1].length > 1 && m[1].length < 60) result.items.push({ name:m[1].trim(), amount:m[2] });
-  });
-  return result;
-}
-
-function _formatReceiptRecord(r, filename) {
-  const lines = [`# Receipt — ${r.vendor||filename}`, ''];
-  if (r.date)     lines.push(`**Date:** ${r.date}`);
-  if (r.vendor)   lines.push(`**Vendor:** ${r.vendor}`);
-  if (r.subtotal) lines.push(`**Subtotal:** $${r.subtotal}`);
-  if (r.tax)      lines.push(`**Tax:** $${r.tax}`);
-  if (r.total)    lines.push(`**Total:** $${r.total}`);
-  if (r.items.length) { lines.push('', '## Line Items', ''); r.items.forEach(item => lines.push(`- ${item.name}: $${item.amount}`)); }
-  return lines.join('\n');
+async function init() {
+  loadSettings();
+  loadQueue();
+  await openDB();
+  recordings = await idbGetAll();
+  const storedFiles = await idbFileGetAll();
+  files = storedFiles.map(r => ({ id: r.id, name: r.name, type: r.type, size: r.size, timestamp: r.timestamp }));
+  renderQueue();
+  renderRecordings();
+  renderFiles();
+  updateBadge();
+  updateComposeStats();
+  refreshSettingsStats();
 }
