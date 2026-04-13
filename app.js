@@ -1,4 +1,4 @@
-// ─── InfinityPaste v5.0.0 — app.js ──────────────────────────────────────────────
+// ─── InfinityPaste v5.0.1 — app.js ──────────────────────────────────────────────
 // Phase 5: hOCR Table OCR, QR Code Reader, Multi-page Table Stitcher, Code Block Extractor, Receipt Parser
 const STATE_VERSION = 4;
 const DB_NAME = 'infinitypaste-db';
@@ -55,6 +55,8 @@ function idbGetAll() {
   });
 }
 
+// FIX #5: store full record {id, name, type, size, timestamp, blob} so metadata
+// survives page reload — previously only blob was stored, losing name/type/size.
 function idbFilePut(record) {
   return new Promise((resolve, reject) => {
     const tx = db.transaction('files', 'readwrite');
@@ -269,7 +271,105 @@ document.addEventListener('paste', e => {
   }
 });
 
-// ─── Text Input ───────────────────────────────────────────────────────────────
+// ─── Text Input + URL Detection ───────────────────────────────────────────────
+// FIX #1: onCollectInput was missing entirely — called on every keystroke from index.html
+const URL_RE = /https?:\/\/[^\s"'<>)]{4,}/i;
+
+function _extractUrl(text) {
+  const m = text.match(URL_RE);
+  return m ? m[0] : null;
+}
+
+function onCollectInput() {
+  const el = document.getElementById('text-input');
+  const fetchBar = document.getElementById('fetch-bar');
+  const autotitleBar = document.getElementById('autotitle-bar');
+  const autotitleSuggestion = document.getElementById('autotitle-suggestion');
+  if (!el || !fetchBar) return;
+
+  const val = el.value;
+  const url = _extractUrl(val);
+
+  if (url) {
+    fetchBar.style.display = 'flex';
+    if (autotitleBar && autotitleSuggestion) {
+      try {
+        const hostname = new URL(url).hostname.replace(/^www\./, '');
+        autotitleSuggestion.textContent = `Suggested label: ${hostname}`;
+        autotitleBar.style.display = 'block';
+      } catch {
+        autotitleBar.style.display = 'none';
+      }
+    }
+  } else {
+    fetchBar.style.display = 'none';
+    if (autotitleBar) autotitleBar.style.display = 'none';
+  }
+}
+
+// FIX #2: fetchUrl was missing — called by "🌐 Fetch URL" button in #fetch-bar
+async function fetchUrl() {
+  const el = document.getElementById('text-input');
+  const statusEl = document.getElementById('fetch-status');
+  if (!el) return;
+  const url = _extractUrl(el.value);
+  if (!url) { showToast('No URL detected', 'error'); return; }
+  if (statusEl) statusEl.textContent = 'Fetching…';
+  showToast('Fetching URL…');
+  try {
+    // Use allorigins CORS proxy for cross-origin fetches in PWA context
+    const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+    const resp = await fetch(proxy);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const json = await resp.json();
+    const raw = json.contents || '';
+    // Strip HTML tags for plain text
+    const tmp = document.createElement('div');
+    tmp.innerHTML = raw;
+    // Remove script/style nodes
+    tmp.querySelectorAll('script, style, noscript').forEach(n => n.remove());
+    const text = (tmp.innerText || tmp.textContent || '').replace(/\s{3,}/g, '\n\n').trim();
+    if (!text) throw new Error('No readable text found');
+    const hostname = (() => { try { return new URL(url).hostname; } catch { return url; } })();
+    addToQueue(text, `fetched · ${hostname}`, url);
+    el.value = '';
+    onCollectInput();
+    switchTab('queue');
+    showToast('✓ URL fetched');
+    if (statusEl) statusEl.textContent = '';
+  } catch (e) {
+    showToast(e.message || 'Fetch failed', 'error');
+    if (statusEl) statusEl.textContent = `Error: ${e.message}`;
+  }
+}
+
+// FIX #3: saveUrlAsFile was missing — called by "💾 Save as File" button in #fetch-bar
+async function saveUrlAsFile() {
+  const el = document.getElementById('text-input');
+  if (!el) return;
+  const url = _extractUrl(el.value);
+  if (!url) { showToast('No URL detected', 'error'); return; }
+  showToast('Saving URL as file…');
+  try {
+    const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+    const resp = await fetch(proxy);
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const blob = await resp.blob();
+    const hostname = (() => { try { return new URL(url).hostname; } catch { return 'url'; } })();
+    const ext = url.split('?')[0].split('.').pop().slice(0, 5) || 'html';
+    const name = `${hostname}-${Date.now()}.${ext}`;
+    const id = Date.now() + Math.random();
+    // FIX #5 applied here too: store full meta + blob together
+    await idbFilePut({ id, name, type: blob.type, size: blob.size, timestamp: new Date().toISOString(), blob });
+    files.push({ id, name, type: blob.type, size: blob.size, timestamp: new Date().toISOString() });
+    renderFiles();
+    switchTab('files');
+    showToast(`✓ Saved as ${name}`);
+  } catch (e) {
+    showToast(e.message || 'Save failed', 'error');
+  }
+}
+
 function submitText() {
   const el = document.getElementById('text-input');
   if (!el) return;
@@ -277,6 +377,7 @@ function submitText() {
   if (!text) { showToast('Nothing to add', 'error'); return; }
   addToQueue(text, '', 'manual');
   el.value = '';
+  onCollectInput();
   switchTab('queue');
   showToast('Added to queue');
 }
@@ -385,6 +486,7 @@ async function transcribeRecording(id) {
   }
 }
 
+// FIX #6: was missing closing </div> for outer .card wrapper — caused DOM corruption
 function renderRecordings() {
   const el = document.getElementById('recordings-list');
   if (!el) return;
@@ -406,7 +508,8 @@ function renderRecordings() {
         <button class="card-btn card-btn--delete" onclick="deleteRecording(${rec.id})">✕</button>
       </div>
       <div id="local-progress-${rec.id}" style="display:none;font-size:0.75rem;color:var(--color-text-muted);padding:4px 0 0 0;"></div>
-      <audio id="audio-${rec.id}" style="display:none" controls></audio>`;
+      <audio id="audio-${rec.id}" style="display:none" controls></audio>
+    </div>`;
   }).join('');
 }
 
@@ -419,14 +522,15 @@ function isPdfFile(file) {
   return /\.pdf$/i.test(file.name) || file.type === 'application/pdf';
 }
 
+// FIX #5: store full metadata + blob together so it survives page reload
 async function handleFileUpload(input) {
   const fileList = input.files;
   if (!fileList?.length) return;
   for (const f of fileList) {
     const id = Date.now() + Math.random();
-    const meta = { id, name: f.name, type: f.type, size: f.size, timestamp: new Date().toISOString() };
-    await idbFilePut({ id, blob: f });
-    files.push(meta);
+    const record = { id, name: f.name, type: f.type, size: f.size, timestamp: new Date().toISOString(), blob: f };
+    await idbFilePut(record);
+    files.push({ id, name: f.name, type: f.type, size: f.size, timestamp: record.timestamp });
   }
   renderFiles();
   showToast(`${fileList.length} file${fileList.length > 1 ? 's' : ''} uploaded`);
@@ -638,11 +742,18 @@ function closeViewer() {
 }
 
 // ─── Settings ─────────────────────────────────────────────────────────────────
+// FIX #7 #8 #9: use .value / .checked directly so modal reflects saved state on re-open
 function openSettings() {
   const modal = document.getElementById('settings-modal');
   if (!modal) return;
-  document.getElementById('setting-key')?.setAttribute('value', settings.openaiKey);
-  document.getElementById('setting-model')?.setAttribute('value', settings.openaiModel);
+  const keyEl = document.getElementById('setting-key');
+  const modelEl = document.getElementById('setting-model');
+  const themeEl = document.getElementById('setting-theme');
+  const tsEl = document.getElementById('setting-timestamps');
+  if (keyEl) keyEl.value = settings.openaiKey;
+  if (modelEl) modelEl.value = settings.openaiModel;
+  if (themeEl) themeEl.value = settings.theme;
+  if (tsEl) tsEl.checked = settings.showTimestamps;
   modal.style.display = 'flex';
 }
 
@@ -687,6 +798,25 @@ function importData(input) {
   reader.readAsText(file);
 }
 
+// FIX #4: generateBookmarklet was missing — called from settings modal
+function generateBookmarklet() {
+  const outputEl = document.getElementById('bookmarklet-output');
+  if (!outputEl) return;
+  // Build a bookmarklet that grabs page title + URL and posts to InfinityPaste via share target
+  // Since this is a PWA, we use the share URL or simply copy to clipboard
+  const appUrl = window.location.origin + window.location.pathname;
+  const code = `javascript:(function(){` +
+    `var t=document.title;` +
+    `var u=location.href;` +
+    `var text=t+'\\n'+u;` +
+    `if(navigator.share){navigator.share({title:t,url:u});}` +
+    `else{navigator.clipboard&&navigator.clipboard.writeText(text).then(function(){alert('Copied to clipboard! Open InfinityPaste and paste.');});}` +
+    `})();`;
+  outputEl.textContent = code;
+  outputEl.style.display = 'block';
+  navigator.clipboard?.writeText(code).then(() => showToast('Bookmarklet copied to clipboard'));
+}
+
 // ─── Init ─────────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', init);
 
@@ -696,7 +826,9 @@ async function init() {
   applyTheme(settings.theme);
   await openDB();
   recordings = await idbGetAll();
-  files = await idbFileGetAll();
+  // FIX #5: reconstruct files[] from IDB records that now include full metadata
+  const storedFiles = await idbFileGetAll();
+  files = storedFiles.map(r => ({ id: r.id, name: r.name, type: r.type, size: r.size, timestamp: r.timestamp }));
   renderQueue();
   renderRecordings();
   renderFiles();
