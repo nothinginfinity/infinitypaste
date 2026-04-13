@@ -1,1 +1,132 @@
-placeholder
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="InfinityPaste">
+  <title>InfinityPaste</title>
+  <link rel="manifest" href="./manifest.json">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="app">
+    <header class="app-header">
+      <div class="header-inner">
+        <span class="app-title">∞ InfinityPaste</span>
+        <div class="header-actions">
+          <button class="btn btn-icon" onclick="pasteFromClipboard()" title="Paste from clipboard">📋</button>
+          <button class="btn btn-icon" onclick="openSettings()" title="Settings">⚙️</button>
+        </div>
+      </div>
+      <nav class="tab-bar">
+        <button class="tab-btn tab-btn--active" data-tab="queue">Queue</button>
+        <button class="tab-btn" data-tab="record">Record</button>
+        <button class="tab-btn" data-tab="files">Files</button>
+      </nav>
+    </header>
+
+    <main class="app-main">
+
+      <!-- Queue Tab -->
+      <div class="tab-panel tab-panel--active" id="panel-queue">
+        <div class="panel-toolbar">
+          <textarea id="text-input" class="text-input" rows="3" placeholder="Type or paste text here…"></textarea>
+          <div class="toolbar-actions">
+            <button class="btn btn-primary btn-sm" onclick="submitText()">Add</button>
+            <button class="btn btn-danger btn-sm" onclick="clearQueue()">🗑 Clear</button>
+            <button class="btn btn-secondary btn-sm" onclick="detectAllLanguages()" title="Tag all queue items with detected language">🌐 Languages</button>
+          </div>
+        </div>
+        <div id="queue-list" class="card-list"></div>
+      </div>
+
+      <!-- Record Tab -->
+      <div class="tab-panel" id="panel-record">
+        <div class="record-controls">
+          <div class="record-timer" id="rec-timer">00:00</div>
+          <div class="record-buttons">
+            <button id="rec-btn-start" class="btn btn-primary" onclick="startRecording()">⏺ Record</button>
+            <button id="rec-btn-stop" class="btn btn-danger" onclick="stopRecording()" disabled>⏹ Stop</button>
+          </div>
+        </div>
+        <div id="recordings-list" class="card-list"></div>
+      </div>
+
+      <!-- Files Tab -->
+      <div class="tab-panel" id="panel-files">
+        <div class="panel-toolbar">
+          <label class="btn btn-primary btn-sm file-upload-label">
+            📎 Upload
+            <input type="file" multiple accept="image/*,.pdf,.txt,.md,.csv,.json" onchange="handleFileUpload(this)" style="display:none">
+          </label>
+        </div>
+        <div id="files-list-view">
+          <div id="files-list" class="card-list"></div>
+        </div>
+        <div id="stitch-area" style="display:none;padding:12px 16px;background:var(--color-surface);border-radius:8px;margin:0 16px 12px">
+          <div style="font-weight:600;margin-bottom:8px">🧵 Table Stitch Queue</div>
+          <div id="stitch-queue-list" style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:10px;font-size:0.8rem"></div>
+          <button id="stitch-btn" class="btn btn-primary btn-sm" onclick="stitchTables()">🧵 Stitch Tables</button>
+        </div>
+        <div id="file-viewer" style="display:none" class="file-viewer">
+          <div class="file-viewer-header">
+            <span id="file-viewer-title" class="file-viewer-title"></span>
+            <button class="btn btn-icon" onclick="closeViewer()">✕</button>
+          </div>
+          <div id="file-viewer-content" class="file-viewer-content"></div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+
+  <div id="toast-container" class="toast-container"></div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal" class="modal-overlay" style="display:none" onclick="if(event.target===this)closeSettings()">
+    <div class="modal">
+      <div class="modal-header">
+        <h2 class="modal-title">Settings</h2>
+        <button class="btn btn-icon" onclick="closeSettings()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="setting-row">
+          <label class="setting-label">OpenAI API Key</label>
+          <input id="setting-key" type="password" class="setting-input" placeholder="sk-…">
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">Model</label>
+          <input id="setting-model" type="text" class="setting-input" value="gpt-4o">
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">Theme</label>
+          <select id="setting-theme" class="setting-input">
+            <option value="auto">Auto</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">Show timestamps</label>
+          <input id="setting-timestamps" type="checkbox" checked>
+        </div>
+        <div class="setting-row">
+          <label class="setting-label">Version</label>
+          <span class="settings-value">5.0.0</span>
+        </div>
+        <div class="setting-row" style="gap:8px">
+          <button class="btn btn-secondary btn-sm" onclick="exportData()">⬆️ Export</button>
+          <label class="btn btn-secondary btn-sm">⬇️ Import<input type="file" accept=".json" onchange="importData(this)" style="display:none"></label>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-primary" onclick="saveSettingsFromForm()">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="./app.js"></script>
+</body>
+</html>
